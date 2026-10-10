@@ -261,7 +261,7 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 		parseErrors := 0
 		segments := 0
 		if strings.HasSuffix(rel, ".sql") {
-			appendSQL(&refs, rel, 1, string(b), false)
+			appendSQL(&refs, rel, 1, string(b))
 		} else if strings.HasSuffix(rel, ".erb") || strings.HasSuffix(rel, ".haml") {
 			refs, parseErrors, segments = scanTemplate(rel, b, idx.ModelMap)
 		} else {

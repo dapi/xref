@@ -2,12 +2,13 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 4
+const indexVersion = 5
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
 	Path       string `json:"path"`
 	Line       int    `json:"line"`
+	Offset     int    `json:"offset,omitempty"`
 	Kind       string `json:"kind"`
 	Table      string `json:"table,omitempty"`
 	Column     string `json:"column,omitempty"`

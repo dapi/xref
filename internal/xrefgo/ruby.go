@@ -1,14 +1,12 @@
 package xrefgo
 
 import (
-	"regexp"
+	"strconv"
 	"strings"
 
 	ts "github.com/tree-sitter/go-tree-sitter"
 	ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
 )
-
-var interpolation = regexp.MustCompile(`#\{[^{}]*\}`)
 
 // A leading English verb is not sufficient: UI copy such as "Select product"
 // is common in Rails trees. Require the structure of a SQL statement.
@@ -156,15 +154,19 @@ func scanRuby(path string, src []byte, models map[string]ModelInfo) ([]Ref, int)
 		switch n.Kind() {
 		case "string", "heredoc_body":
 			text := n.Utf8Text(src)
+			interpolated := true
 			if n.Kind() == "string" {
+				interpolated = !strings.HasPrefix(text, "'")
 				text = strings.Trim(text, "'\"")
 			}
 			if looksSQL(text) {
-				dynamic := interpolation.MatchString(text)
-				if dynamic {
-					text = interpolation.ReplaceAllString(text, "1")
+				line := int(n.StartPosition().Row) + 1
+				if interpolated {
+					query, holes, unsafe := substituteSQLHoles(text, line)
+					appendSQLWithHoles(&refs, path, line, query, holes, unsafe)
+				} else {
+					appendSQL(&refs, path, line, text)
 				}
-				appendSQL(&refs, path, int(n.StartPosition().Row)+1, text, dynamic)
 			}
 		case "call":
 			method := fieldText(n, "method", src)
@@ -260,14 +262,25 @@ func ormColumns(args *ts.Node, method string, src []byte) []string {
 	return keys(set)
 }
 
-func appendSQL(refs *[]Ref, path string, line int, query string, dynamic bool) {
+func appendSQL(refs *[]Ref, path string, line int, query string) {
+	appendSQLWithHoles(refs, path, line, query, nil, false)
+}
+
+func appendSQLWithHoles(refs *[]Ref, path string, line int, query string, holes []sqlHole, unsafe bool) {
+	for _, h := range holes {
+		*refs = append(*refs, Ref{Path: path, Line: h.Line, Offset: h.Offset, Kind: "sql_hole", Confidence: "blind", Detail: h.Context})
+	}
+	if unsafe {
+		*refs = append(*refs, Ref{Path: path, Line: line, Kind: "sql_blind", Confidence: "blind", Detail: "динамическое имя или незакрытая интерполяция SQL"})
+		return
+	}
 	facts, err := parseSQL(query)
 	if err != nil {
 		*refs = append(*refs, Ref{Path: path, Line: line, Kind: "sql_blind", Confidence: "blind", Detail: "SQL не разобран"})
 		return
 	}
 	kind := "parsed_sql"
-	if dynamic {
+	if len(holes) > 0 {
 		kind = "parsed_sql_dynamic"
 	}
 	for _, table := range facts.Tables {
@@ -283,16 +296,13 @@ func appendSQL(refs *[]Ref, path string, line int, query string, dynamic bool) {
 			*refs = append(*refs, Ref{Path: path, Line: line, Kind: kind, Table: owner, Column: column, Confidence: "fact"})
 		}
 	}
-	if dynamic {
-		*refs = append(*refs, Ref{Path: path, Line: line, Kind: "sql_hole", Confidence: "blind", Detail: "интерполяция Ruby в SQL"})
-	}
 }
 
 func dedup(refs []Ref) []Ref {
 	seen := map[string]bool{}
 	out := make([]Ref, 0, len(refs))
 	for _, r := range refs {
-		key := r.Path + "|" + r.Kind + "|" + r.Table + "|" + r.Column + "|" + r.Detail + "|" + string(rune(r.Line))
+		key := r.Path + "|" + r.Kind + "|" + r.Table + "|" + r.Column + "|" + r.Detail + "|" + strconv.Itoa(r.Line) + "|" + strconv.Itoa(r.Offset)
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, r)
