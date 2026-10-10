@@ -51,7 +51,7 @@ func Run(args []string, out io.Writer) error {
 		return fmt.Errorf("--limit должен быть больше нуля")
 	}
 	switch rest[0] {
-	case "refresh", "where", "find", "blind", "drift", "audit":
+	case "refresh", "where", "find", "blind", "drift", "audit", "route", "trace", "callers":
 	default:
 		return fmt.Errorf("неизвестная команда %q\n%s", rest[0], usage())
 	}
@@ -112,6 +112,16 @@ func Run(args []string, out io.Writer) error {
 		result = drift(idx)
 	case "audit":
 		result = audit(idx, changed, path)
+	case "route", "trace":
+		if len(rest) != 2 || rest[1] == "" {
+			return fmt.Errorf("%s требует путь маршрута или имя таблицы", cmd)
+		}
+		result = traceReport(idx, rest[1], cmd == "route", *limit)
+	case "callers":
+		if len(rest) != 2 || rest[1] == "" {
+			return fmt.Errorf("callers требует относительный путь файла")
+		}
+		result = callersReport(idx, filepath.ToSlash(strings.TrimPrefix(rest[1], "./")))
 	default:
 		return fmt.Errorf("неизвестная команда %q", cmd)
 	}
@@ -128,7 +138,7 @@ func Run(args []string, out io.Writer) error {
 }
 
 func usage() string {
-	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ|pg:ИСТОЧНИК] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit"
+	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ|pg:ИСТОЧНИК] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit, route <[VERB ]/путь>, trace <таблица[.колонка]>, callers <файл>"
 }
 
 func allRefs(idx *Index) []Ref {
@@ -357,7 +367,13 @@ func audit(idx *Index, changed int, path string) map[string]any {
 			}
 		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "limitations": []string{"Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
+	methods, calls, routes := 0, 0, 0
+	for _, f := range idx.Files {
+		methods += len(f.Methods)
+		calls += len(f.Calls)
+		routes += len(f.Routes)
+	}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "calls": calls, "route_candidates": routes, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
@@ -405,6 +421,32 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 				name += "." + d.Column
 			}
 			fmt.Fprintf(out, "%s  есть: %s; нет: %s\n", name, strings.Join(d.Present, ","), strings.Join(d.Missing, ","))
+		}
+	case TraceReport:
+		fmt.Fprintf(out, "Цепочек: %d", len(x.Chains))
+		if x.Truncated {
+			fmt.Fprint(out, " (вывод ограничен)")
+		}
+		fmt.Fprintln(out)
+		for _, chain := range x.Chains {
+			fmt.Fprintf(out, "%s %s → %s#%s (%s:%d)\n", chain.Route.Verb, chain.Route.Path, chain.Route.Controller, chain.Route.Action, chain.Route.Source, chain.Route.Line)
+			for _, step := range chain.Steps {
+				fmt.Fprintf(out, "  → %s %s:%d %s [%s]\n", step.Kind, step.Path, step.Line, step.Name, step.Confidence)
+			}
+			name := chain.Ref.Table
+			if chain.Ref.Column != "" {
+				name += "." + chain.Ref.Column
+			}
+			fmt.Fprintf(out, "  → %s:%d %s [%s]\n", chain.Ref.Path, chain.Ref.Line, name, chain.Ref.Confidence)
+		}
+		fmt.Fprintln(out, x.Note)
+	case CallerReport:
+		fmt.Fprintf(out, "%s: методов %d, вызовов %d, маршрутов %d\n", x.File, len(x.Methods), len(x.Calls), len(x.Routes))
+		for _, r := range x.Routes {
+			fmt.Fprintf(out, "%s %s (%s:%d) [%s]\n", r.Verb, r.Path, r.Source, r.Line, r.Confidence)
+		}
+		for _, c := range x.Calls {
+			fmt.Fprintf(out, "%s:%d %s#%s → %s#%s [candidate]\n", c.Call.Path, c.Call.Line, c.Call.Owner, c.Call.Source, c.Target.Owner, c.Target.Name)
 		}
 	case map[string]any:
 		b, _ := json.MarshalIndent(x, "", "  ")
