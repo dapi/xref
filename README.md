@@ -1,5 +1,8 @@
 # xref
 
+> This fork also contains an [experimental Go port for Ruby/Rails projects](doc/go-port.md).
+> The original Ruby engine described below remains available and is the reference implementation.
+
 **An index of your code and your live databases — fast enough to use instead of grep.**
 
 [English](README.md) · [Русский](README.ru.md)

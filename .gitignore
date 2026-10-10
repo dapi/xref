@@ -13,3 +13,4 @@ Gemfile.lock
 /tmp/
 /log/
 *.log
+/bin/xref-go
