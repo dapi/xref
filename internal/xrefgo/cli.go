@@ -154,7 +154,7 @@ func usage() string {
 
 func allRefs(idx *Index) []Ref {
 	out := []Ref{}
-	for _, f := range idx.Files {
+	for _, f := range expandedFiles(idx) {
 		out = append(out, f.Refs...)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -343,12 +343,13 @@ func schemaSummary(idx *Index) map[string]int {
 }
 
 func audit(idx *Index, changed int, path string) map[string]any {
+	files := expandedFiles(idx)
 	refs := 0
 	parseErrors := 0
 	templateFiles, templateSegments, templateErrors := 0, 0, 0
 	byKind := map[string]int{}
 	holeContexts := map[string]int{}
-	for name, f := range idx.Files {
+	for name, f := range files {
 		parseErrors += f.Errors
 		if strings.HasSuffix(name, ".erb") || strings.HasSuffix(name, ".haml") {
 			templateFiles++
@@ -380,11 +381,11 @@ func audit(idx *Index, changed int, path string) map[string]any {
 	}
 	methods, calls, routes, renders, redirects, dynamicReceivers := 0, 0, 0, 0, 0, 0
 	scopes, localBindings, variableReceivers := 0, 0, 0
-	for _, f := range idx.Files {
+	for _, f := range files {
 		methods += len(f.Methods)
 		localBindings += len(f.Locals)
 		for _, m := range f.Methods {
-			if m.Kind == "scope" {
+			if isScope(m) {
 				scopes++
 			}
 		}
@@ -413,7 +414,7 @@ func audit(idx *Index, changed int, path string) map[string]any {
 			}
 		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "scope_declarations": scopes, "calls": calls, "local_bindings": localBindings, "variable_receivers": variableReceivers, "resolved_variable_calls": resolvedVariableCalls, "route_candidates": routes, "render_calls": renders, "redirect_calls": redirects, "dynamic_receivers": dynamicReceivers, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Explicit render links cover literal action, template and partial targets; branches and custom renderers are unresolved", "Variable calls require one direct local assignment of a class constant or Class.new; reassignment and branches remain unresolved", "Rails scopes are recognized only for literal names and inline lambdas on mapped models", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "scope_declarations": scopes, "calls": calls, "local_bindings": localBindings, "variable_receivers": variableReceivers, "resolved_variable_calls": resolvedVariableCalls, "route_candidates": routes, "render_calls": renders, "redirect_calls": redirects, "dynamic_receivers": dynamicReceivers, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Explicit render links cover literal action, template and partial targets; branches and custom renderers are unresolved", "Variable calls require one direct local assignment of a class constant or Class.new; reassignment and branches remain unresolved", "Rails scopes in models and explicitly included concerns require literal names and inline lambdas; relation chains require known scope or relation methods", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {

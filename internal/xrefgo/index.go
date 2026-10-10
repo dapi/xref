@@ -283,7 +283,7 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 			methods = append(methods, scopeMethods...)
 			refs = dedup(append(refs, scopeRefs...))
 		}
-		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors, Segments: segments, Methods: methods, Calls: calls, Routes: routes, Renders: renders, Locals: locals}
+		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors, Segments: segments, Methods: methods, Calls: calls, Routes: routes, Renders: renders, Locals: locals, Includes: scanModelIncludes(rel, b, idx.ModelMap), ConcernScopes: scanConcernScopes(rel, b)}
 		changed++
 	}
 	for _, f := range idx.Files {

@@ -93,19 +93,61 @@ func scopeRefs(path string, src []byte, lambda *ts.Node, owner, name string, inf
 	if info.Explicit || info.Verified {
 		confidence = "inferred"
 	}
+	for _, use := range scopeUses(src, lambda) {
+		level := confidence
+		if use.Via != "" {
+			level = "candidate"
+		}
+		refs = append(refs, Ref{Path: path, Line: use.Line, Kind: "orm_table", Table: info.Table, Confidence: level, Detail: owner + ".scope " + name + " " + use.Method})
+		for _, column := range use.Columns {
+			refs = append(refs, Ref{Path: path, Line: use.Line, Kind: "orm_column", Table: info.Table, Column: column, Confidence: "candidate", Detail: owner + ".scope " + name + " " + use.Method})
+		}
+	}
+	return refs
+}
+
+func scopeUses(src []byte, lambda *ts.Node) []ScopeUse {
+	uses := []ScopeUse{}
+	blocked := map[string]bool{}
+	var collectBindings func(*ts.Node)
+	collectBindings = func(n *ts.Node) {
+		if n != lambda && n.Kind() == "lambda" {
+			return
+		}
+		if n.Kind() == "lambda_parameters" {
+			for i := uint(0); i < n.NamedChildCount(); i++ {
+				if child := n.NamedChild(i); child.Kind() == "identifier" {
+					blocked[child.Utf8Text(src)] = true
+				}
+			}
+		}
+		if n.Kind() == "assignment" || n.Kind() == "operator_assignment" {
+			if left := n.ChildByFieldName("left"); left != nil && left.Kind() == "identifier" {
+				blocked[left.Utf8Text(src)] = true
+			}
+		}
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			collectBindings(n.NamedChild(i))
+		}
+	}
+	collectBindings(lambda)
 	var walk func(*ts.Node)
 	walk = func(n *ts.Node) {
+		if n != lambda && n.Kind() == "lambda" {
+			return
+		}
 		if n.Kind() == "call" {
 			method := fieldText(n, "method", src)
 			receiver := n.ChildByFieldName("receiver")
-			if ormMethod(method) && (receiver == nil || receiver.Kind() == "self") {
-				line := int(n.StartPosition().Row) + 1
-				refs = append(refs, Ref{Path: path, Line: line, Kind: "orm_table", Table: info.Table, Confidence: confidence, Detail: owner + ".scope " + name + " " + method})
-				if args := n.ChildByFieldName("arguments"); args != nil {
-					for _, column := range ormColumns(args, method, src) {
-						refs = append(refs, Ref{Path: path, Line: line, Kind: "orm_column", Table: info.Table, Column: column, Confidence: "candidate", Detail: owner + ".scope " + name + " " + method})
-					}
+			if ormMethod(method) && (receiver == nil || receiver.Kind() == "self" || (receiver.Kind() == "identifier" && !blocked[receiver.Utf8Text(src)])) {
+				use := ScopeUse{Method: method, Line: int(n.StartPosition().Row) + 1}
+				if receiver != nil && receiver.Kind() == "identifier" {
+					use.Via = receiver.Utf8Text(src)
 				}
+				if args := n.ChildByFieldName("arguments"); args != nil {
+					use.Columns = ormColumns(args, method, src)
+				}
+				uses = append(uses, use)
 			}
 		}
 		for i := uint(0); i < n.NamedChildCount(); i++ {
@@ -113,5 +155,192 @@ func scopeRefs(path string, src []byte, lambda *ts.Node, owner, name string, inf
 		}
 	}
 	walk(lambda)
-	return refs
+	return uses
+}
+
+// Only includes directly in a mapped model class are considered. Ruby can add
+// modules dynamically; these declarations are static candidates only.
+func scanModelIncludes(path string, src []byte, models map[string]ModelInfo) []ModelInclude {
+	if !strings.HasPrefix(path, "app/models/") || strings.HasPrefix(path, "app/models/concerns/") {
+		return nil
+	}
+	p, tree, err := rubyTree(src)
+	if err != nil {
+		return nil
+	}
+	defer p.Close()
+	defer tree.Close()
+	out := []ModelInclude{}
+	var walk func(*ts.Node, string)
+	walk = func(n *ts.Node, owner string) {
+		switch n.Kind() {
+		case "class":
+			name := fieldText(n, "name", src)
+			if name != "" {
+				if owner != "" && !strings.Contains(name, "::") {
+					name = owner + "::" + name
+				}
+				owner = strings.TrimPrefix(name, "::")
+			}
+		case "module":
+			name := fieldText(n, "name", src)
+			if name != "" {
+				if owner != "" && !strings.Contains(name, "::") {
+					name = owner + "::" + name
+				}
+				owner = strings.TrimPrefix(name, "::")
+			}
+		case "method", "singleton_method":
+			return
+		case "call":
+			if models[owner].Table != "" && fieldText(n, "method", src) == "include" && n.ChildByFieldName("receiver") == nil && n.Parent() != nil && n.Parent().Kind() == "body_statement" {
+				if args := n.ChildByFieldName("arguments"); args != nil {
+					for i := uint(0); i < args.NamedChildCount(); i++ {
+						arg := args.NamedChild(i)
+						if arg.Kind() == "constant" || arg.Kind() == "scope_resolution" {
+							out = append(out, ModelInclude{Owner: owner, Module: strings.TrimPrefix(arg.Utf8Text(src), "::")})
+						}
+					}
+				}
+			}
+		}
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			walk(n.NamedChild(i), owner)
+		}
+	}
+	walk(tree.RootNode(), "")
+	return out
+}
+
+// ActiveSupport::Concern evaluates scopes in an `included do` block on the
+// including model. Keep the source definition separate until graph expansion.
+func scanConcernScopes(path string, src []byte) []ConcernScope {
+	if !strings.HasPrefix(path, "app/models/concerns/") {
+		return nil
+	}
+	p, tree, err := rubyTree(src)
+	if err != nil {
+		return nil
+	}
+	defer p.Close()
+	defer tree.Close()
+	out := []ConcernScope{}
+	var walk func(*ts.Node, string, bool)
+	walk = func(n *ts.Node, owner string, included bool) {
+		switch n.Kind() {
+		case "module":
+			name := fieldText(n, "name", src)
+			if name != "" {
+				if owner != "" && !strings.Contains(name, "::") {
+					name = owner + "::" + name
+				}
+				owner = strings.TrimPrefix(name, "::")
+			}
+		case "class", "method", "singleton_method":
+			return
+		case "call":
+			if owner != "" && fieldText(n, "method", src) == "included" && n.ChildByFieldName("receiver") == nil {
+				for i := uint(0); i < n.NamedChildCount(); i++ {
+					child := n.NamedChild(i)
+					if child.Kind() == "do_block" {
+						walk(child, owner, true)
+					}
+				}
+				return
+			}
+			if included && owner != "" && fieldText(n, "method", src) == "scope" && n.ChildByFieldName("receiver") == nil && n.Parent() != nil && n.Parent().Kind() == "body_statement" {
+				args := n.ChildByFieldName("arguments")
+				if args != nil && args.NamedChildCount() > 1 {
+					nameNode := args.NamedChild(0)
+					if nameNode.Kind() == "simple_symbol" || nameNode.Kind() == "string" {
+						name := unquoteRoute(nameNode.Utf8Text(src))
+						if scopeName(name) {
+							for i := uint(1); i < args.NamedChildCount(); i++ {
+								if child := args.NamedChild(i); child.Kind() == "lambda" {
+									out = append(out, ConcernScope{Module: owner, Name: name, Path: path, Line: int(n.StartPosition().Row) + 1, EndLine: int(n.EndPosition().Row) + 1, Uses: scopeUses(src, child)})
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		for i := uint(0); i < n.NamedChildCount(); i++ {
+			walk(n.NamedChild(i), owner, included)
+		}
+	}
+	walk(tree.RootNode(), "", false)
+	return out
+}
+
+// Expand a concern's scope against each statically including model. The index
+// keeps the concern definition once, so changes to either side need no stale
+// generated records to be removed from the on-disk cache.
+func expandedFiles(idx *Index) map[string]File {
+	out := make(map[string]File, len(idx.Files))
+	defs := map[string][]ConcernScope{}
+	includes := []ModelInclude{}
+	for path, f := range idx.Files {
+		out[path] = f
+		for _, scope := range f.ConcernScopes {
+			defs[scope.Module] = append(defs[scope.Module], scope)
+		}
+		includes = append(includes, f.Includes...)
+	}
+	available := map[string]map[string]bool{}
+	for _, f := range idx.Files {
+		for _, method := range f.Methods {
+			if isScope(method) {
+				if available[method.Owner] == nil {
+					available[method.Owner] = map[string]bool{}
+				}
+				available[method.Owner][method.Name] = true
+			}
+		}
+	}
+	for _, inc := range includes {
+		module := includedModule(inc, defs)
+		for _, scope := range defs[module] {
+			if available[inc.Owner] == nil {
+				available[inc.Owner] = map[string]bool{}
+			}
+			available[inc.Owner][scope.Name] = true
+		}
+	}
+	for _, inc := range includes {
+		module := includedModule(inc, defs)
+		info := idx.ModelMap[inc.Owner]
+		if info.Table == "" {
+			continue
+		}
+		for _, scope := range defs[module] {
+			f := out[scope.Path]
+			f.Methods = append(f.Methods, Method{Owner: inc.Owner, Name: scope.Name, Class: true, Path: scope.Path, Line: scope.Line, EndLine: scope.EndLine, Kind: "concern_scope"})
+			for _, use := range scope.Uses {
+				if use.Via != "" && !available[inc.Owner][use.Via] {
+					continue
+				}
+				level := "candidate"
+				if use.Via == "" && (info.Explicit || info.Verified) {
+					level = "inferred"
+				}
+				detail := inc.Owner + ".scope " + scope.Name + " " + use.Method + " (" + module + ")"
+				f.Refs = append(f.Refs, Ref{Path: scope.Path, Line: use.Line, Kind: "orm_table", Table: info.Table, Confidence: level, Detail: detail, ScopeOwner: inc.Owner, ScopeName: scope.Name})
+				for _, column := range use.Columns {
+					f.Refs = append(f.Refs, Ref{Path: scope.Path, Line: use.Line, Kind: "orm_column", Table: info.Table, Column: column, Confidence: "candidate", Detail: detail, ScopeOwner: inc.Owner, ScopeName: scope.Name})
+				}
+			}
+			out[scope.Path] = f
+		}
+	}
+	return out
+}
+
+func includedModule(inc ModelInclude, defs map[string][]ConcernScope) string {
+	module := inc.Module
+	if len(defs[module]) == 0 && !strings.Contains(module, "::") && strings.Contains(inc.Owner, "::") {
+		ns := inc.Owner[:strings.LastIndex(inc.Owner, "::")]
+		module = ns + "::" + module
+	}
+	return module
 }

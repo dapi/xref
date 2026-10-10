@@ -58,6 +58,7 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []
 				receiver := n.ChildByFieldName("receiver")
 				value := ""
 				receiverKind := "implicit"
+				var prefix []string
 				if receiver != nil {
 					receiverKind = "dynamic"
 					switch receiver.Kind() {
@@ -76,10 +77,13 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []
 								value = root + ".new"
 								receiverKind = "constructed"
 							}
+						} else if root, chain := relationChain(receiver, src); root != "" && len(chain) > 0 {
+							value, prefix = root, chain
+							receiverKind = "relation"
 						}
 					}
 				}
-				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, ReceiverKind: receiverKind, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1, Direct: directStatementCall(n)})
+				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, ReceiverKind: receiverKind, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1, Direct: directStatementCall(n), Prefix: prefix})
 			}
 			if strings.HasPrefix(path, "config/routes") {
 				routes = append(routes, routeFromCall(path, src, n, scope)...)
@@ -101,6 +105,37 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []
 	walk(tree.RootNode(), "", "", false, routeScope{})
 	return methods, calls, dedupRoutes(routes), renders, locals
 }
+
+func relationChain(n *ts.Node, src []byte) (string, []string) {
+	if n == nil {
+		return "", nil
+	}
+	if n.Kind() == "constant" || n.Kind() == "scope_resolution" {
+		return strings.TrimPrefix(n.Utf8Text(src), "::"), nil
+	}
+	if n.Kind() != "call" {
+		return "", nil
+	}
+	root, chain := relationChain(n.ChildByFieldName("receiver"), src)
+	if root == "" {
+		return "", nil
+	}
+	name := fieldText(n, "method", src)
+	if name == "" || name == "new" {
+		return "", nil
+	}
+	return root, append(chain, name)
+}
+
+func relationMethod(name string) bool {
+	switch name {
+	case "where", "not", "joins", "left_joins", "includes", "preload", "order", "reorder", "group", "select", "merge", "limit", "offset", "distinct", "references":
+		return true
+	}
+	return false
+}
+
+func isScope(m Method) bool { return m.Kind == "scope" || m.Kind == "concern_scope" }
 
 type routeScope struct{ path, module, resource string }
 
@@ -333,14 +368,16 @@ type Graph struct {
 	locals   map[string]map[string][]LocalBinding
 }
 type resolvedCall struct {
-	Call   Call   `json:"call"`
-	Target Method `json:"target"`
+	Call   Call     `json:"call"`
+	Target Method   `json:"target"`
+	Prefix []Method `json:"prefix,omitempty"`
 }
 
 func buildGraph(idx *Index) Graph {
-	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: idx.Files, locals: map[string]map[string][]LocalBinding{}}
+	files := expandedFiles(idx)
+	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: files, locals: map[string]map[string][]LocalBinding{}}
 	owners, names := map[string]bool{}, map[string]bool{}
-	for _, f := range idx.Files {
+	for _, f := range files {
 		for _, m := range f.Methods {
 			k := methodKey(m.Owner, m.Name, m.Class)
 			g.methods[k] = append(g.methods[k], m)
@@ -359,8 +396,12 @@ func buildGraph(idx *Index) Graph {
 			g.locals[k][b.Name] = append(g.locals[k][b.Name], b)
 		}
 	}
-	for _, f := range idx.Files {
+	for _, f := range files {
 		for _, r := range f.Refs {
+			if r.ScopeOwner != "" {
+				g.refs[methodKey(r.ScopeOwner, r.ScopeName, true)] = append(g.refs[methodKey(r.ScopeOwner, r.ScopeName, true)], r)
+				continue
+			}
 			for _, m := range f.Methods {
 				if r.Line >= m.Line && r.Line <= m.EndLine {
 					g.refs[methodKey(m.Owner, m.Name, m.Class)] = append(g.refs[methodKey(m.Owner, m.Name, m.Class)], r)
@@ -370,6 +411,29 @@ func buildGraph(idx *Index) Graph {
 		}
 		for _, c := range f.Calls {
 			sourceKey := methodKey(c.Owner, c.Source, c.SourceClass)
+			if c.ReceiverKind == "relation" {
+				info := idx.ModelMap[c.Receiver]
+				prefix := []Method{}
+				valid := info.Table != ""
+				for _, name := range c.Prefix {
+					if relationMethod(name) {
+						continue
+					}
+					candidates := g.methods[methodKey(c.Receiver, name, true)]
+					if len(candidates) != 1 || !isScope(candidates[0]) {
+						valid = false
+						break
+					}
+					prefix = append(prefix, candidates[0])
+				}
+				candidates := g.methods[methodKey(c.Receiver, c.Method, true)]
+				if valid && len(candidates) == 1 && isScope(candidates[0]) {
+					g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{Call: c, Target: candidates[0], Prefix: prefix})
+				} else if names[c.Method] && !ormMethod(c.Method) {
+					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Reason: "цепочка relation или scope не разрешена однозначно"})
+				}
+				continue
+			}
 			if c.ReceiverKind == "dynamic" {
 				if names[c.Method] && !ormMethod(c.Method) {
 					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Reason: "цель вызова зависит от значения переменной"})
@@ -417,7 +481,7 @@ func buildGraph(idx *Index) Graph {
 				candidates = g.methods[methodKey(ns+"::"+targetOwner, targetMethod, class)]
 			}
 			if len(candidates) == 1 {
-				g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{c, candidates[0]})
+				g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{Call: c, Target: candidates[0]})
 			} else if len(candidates) == 0 && (c.ReceiverKind == "constant" || c.ReceiverKind == "constructed" || c.ReceiverKind == "variable") && c.Method != "new" && !ormMethod(c.Method) && owners[targetOwner] {
 				g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "unresolved_call", Path: c.Path, Line: c.Line, Detail: targetOwner + "#" + c.Method, Reason: "метод не найден в индексе; возможно, он унаследован или определён динамически"})
 			}
@@ -537,7 +601,11 @@ func (g Graph) routeChains(r Route, query string, limit int) []TraceChain {
 		}
 		for _, edge := range g.forward[k] {
 			next := methodKey(edge.Target.Owner, edge.Target.Name, edge.Target.Class)
-			visit(next, append(append([]TraceStep(nil), steps...), TraceStep{Kind: "call", Path: edge.Call.Path, Line: edge.Call.Line, Name: edge.Target.Owner + "#" + edge.Target.Name, Confidence: "candidate"}), depth+1)
+			chain := append([]TraceStep(nil), steps...)
+			for _, method := range edge.Prefix {
+				chain = append(chain, TraceStep{Kind: "call", Path: edge.Call.Path, Line: edge.Call.Line, Name: method.Owner + "#" + method.Name, Confidence: "candidate"})
+			}
+			visit(next, append(chain, TraceStep{Kind: "call", Path: edge.Call.Path, Line: edge.Call.Line, Name: edge.Target.Owner + "#" + edge.Target.Name, Confidence: "candidate"}), depth+1)
 		}
 	}
 	for _, m := range g.methods[key] {
