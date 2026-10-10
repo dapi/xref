@@ -11,14 +11,15 @@ import (
 
 // scanGraph records syntax facts. Resolution of calls and Rails routes happens
 // separately, so a parsed call never implies that Ruby will dispatch to it.
-func scanGraph(path string, src []byte) ([]Method, []Call, []Route) {
+func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
 	p, tree, err := rubyTree(src)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	defer p.Close()
 	defer tree.Close()
 	methods, calls, routes := []Method{}, []Call{}, []Route{}
+	renders := []Render{}
 	var walk func(*ts.Node, string, string, bool, routeScope)
 	walk = func(n *ts.Node, owner, source string, sourceClass bool, scope routeScope) {
 		switch n.Kind() {
@@ -39,22 +40,41 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route) {
 			source, sourceClass = name, class
 		case "call":
 			name := fieldText(n, "method", src)
+			if strings.HasPrefix(path, "app/controllers/") && source != "" && owner != "" {
+				if name == "render" {
+					if render, ok := renderFromCall(path, src, n, owner, source, sourceClass); ok {
+						renders = append(renders, render)
+					}
+				} else if name == "redirect_to" || name == "redirect_back_or_to" {
+					receiver := n.ChildByFieldName("receiver")
+					if receiver == nil || receiver.Kind() == "self" {
+						renders = append(renders, Render{Owner: owner, Source: source, SourceClass: sourceClass, Path: path, Line: int(n.StartPosition().Row) + 1, Kind: "redirect"})
+					}
+				}
+			}
 			if source != "" && owner != "" && name != "" {
 				receiver := n.ChildByFieldName("receiver")
 				value := ""
+				receiverKind := "implicit"
 				if receiver != nil {
+					receiverKind = "dynamic"
 					switch receiver.Kind() {
 					case "self":
 						value = "self"
+						receiverKind = "self"
 					case "constant", "scope_resolution":
 						value = receiver.Utf8Text(src)
+						receiverKind = "constant"
 					case "call":
 						if fieldText(receiver, "method", src) == "new" {
-							value = callRoot(receiver.ChildByFieldName("receiver"), src) + ".new"
+							if root := callRoot(receiver.ChildByFieldName("receiver"), src); root != "" {
+								value = root + ".new"
+								receiverKind = "constructed"
+							}
 						}
 					}
 				}
-				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1})
+				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, ReceiverKind: receiverKind, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1})
 			}
 			if strings.HasPrefix(path, "config/routes") {
 				routes = append(routes, routeFromCall(path, src, n, scope)...)
@@ -74,7 +94,7 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route) {
 		}
 	}
 	walk(tree.RootNode(), "", "", false, routeScope{})
-	return methods, calls, dedupRoutes(routes)
+	return methods, calls, dedupRoutes(routes), renders
 }
 
 type routeScope struct{ path, module, resource string }
@@ -180,10 +200,14 @@ func routeFromCall(path string, src []byte, n *ts.Node, scope routeScope) []Rout
 	switch name {
 	case "get", "post", "put", "patch", "delete", "root":
 		url := routeFirst(args, src)
+		first := url
 		if name == "root" {
 			url = ""
 		}
 		target := routeArg(args, src, "to")
+		if name == "root" && target == "" && strings.Contains(first, "#") {
+			target = first
+		}
 		if target == "" && args != nil {
 			for i := uint(0); i < args.NamedChildCount(); i++ {
 				pair := args.NamedChild(i)
@@ -294,11 +318,13 @@ func methodKey(owner, name string, class bool) string {
 }
 
 type Graph struct {
-	methods map[string][]Method
-	forward map[string][]resolvedCall
-	routes  []Route
-	refs    map[string][]Ref
-	files   map[string]File
+	methods  map[string][]Method
+	forward  map[string][]resolvedCall
+	renders  map[string][]Render
+	callGaps map[string][]TraceGap
+	routes   []Route
+	refs     map[string][]Ref
+	files    map[string]File
 }
 type resolvedCall struct {
 	Call   Call   `json:"call"`
@@ -306,11 +332,18 @@ type resolvedCall struct {
 }
 
 func buildGraph(idx *Index) Graph {
-	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: idx.Files}
+	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: idx.Files}
+	owners, names := map[string]bool{}, map[string]bool{}
 	for _, f := range idx.Files {
 		for _, m := range f.Methods {
 			k := methodKey(m.Owner, m.Name, m.Class)
 			g.methods[k] = append(g.methods[k], m)
+			owners[m.Owner] = true
+			names[m.Name] = true
+		}
+		for _, r := range f.Renders {
+			k := methodKey(r.Owner, r.Source, r.SourceClass)
+			g.renders[k] = append(g.renders[k], r)
 		}
 	}
 	for _, f := range idx.Files {
@@ -323,6 +356,13 @@ func buildGraph(idx *Index) Graph {
 			}
 		}
 		for _, c := range f.Calls {
+			sourceKey := methodKey(c.Owner, c.Source, c.SourceClass)
+			if c.ReceiverKind == "dynamic" {
+				if names[c.Method] && !ormMethod(c.Method) {
+					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Reason: "цель вызова зависит от значения переменной"})
+				}
+				continue
+			}
 			targetOwner, class := c.Owner, c.SourceClass
 			targetMethod := c.Method
 			switch {
@@ -346,8 +386,9 @@ func buildGraph(idx *Index) Graph {
 				candidates = g.methods[methodKey(ns+"::"+targetOwner, targetMethod, class)]
 			}
 			if len(candidates) == 1 {
-				sourceKey := methodKey(c.Owner, c.Source, c.SourceClass)
 				g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{c, candidates[0]})
+			} else if len(candidates) == 0 && (c.ReceiverKind == "constant" || c.ReceiverKind == "constructed") && c.Method != "new" && !ormMethod(c.Method) && owners[targetOwner] {
+				g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "unresolved_call", Path: c.Path, Line: c.Line, Detail: targetOwner + "#" + c.Method, Reason: "метод не найден в индексе; возможно, он унаследован или определён динамически"})
 			}
 		}
 	}
@@ -378,12 +419,21 @@ type TraceChain struct {
 	Steps []TraceStep `json:"steps"`
 	Ref   Ref         `json:"ref"`
 }
+type TraceGap struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Detail string `json:"detail,omitempty"`
+	Reason string `json:"reason"`
+}
 type TraceReport struct {
-	Query     string       `json:"query"`
-	Routes    int          `json:"matching_routes"`
-	Chains    []TraceChain `json:"chains"`
-	Truncated bool         `json:"truncated"`
-	Note      string       `json:"note"`
+	Query         string       `json:"query"`
+	Routes        int          `json:"matching_routes"`
+	Chains        []TraceChain `json:"chains"`
+	Truncated     bool         `json:"truncated"`
+	Gaps          []TraceGap   `json:"gaps,omitempty"`
+	GapsTruncated bool         `json:"gaps_truncated,omitempty"`
+	Note          string       `json:"note"`
 }
 
 func controllerOwner(path string) string {
@@ -447,6 +497,13 @@ func (g Graph) routeChains(r Route, query string, limit int) []TraceChain {
 		for _, ref := range g.refs[k] {
 			add(steps, ref)
 		}
+		for _, render := range g.renders[k] {
+			prefix := renderViewPath(r.Controller, render)
+			for _, ref := range viewRefs(g.files, prefix) {
+				next := append(append([]TraceStep(nil), steps...), TraceStep{Kind: "render", Path: render.Path, Line: render.Line, Name: render.Target, Confidence: "candidate"}, TraceStep{Kind: "template", Path: ref.Path, Line: ref.Line, Name: render.Target, Confidence: "candidate"})
+				add(next, ref)
+			}
+		}
 		for _, edge := range g.forward[k] {
 			next := methodKey(edge.Target.Owner, edge.Target.Name, edge.Target.Class)
 			visit(next, append(append([]TraceStep(nil), steps...), TraceStep{Kind: "call", Path: edge.Call.Path, Line: edge.Call.Line, Name: edge.Target.Owner + "#" + edge.Target.Name, Confidence: "candidate"}), depth+1)
@@ -464,9 +521,86 @@ func (g Graph) routeChains(r Route, query string, limit int) []TraceChain {
 	return out
 }
 
+func (g Graph) routeGaps(r Route, limit int) []TraceGap {
+	out := []TraceGap{}
+	seen := map[string]bool{}
+	add := func(gap TraceGap) {
+		key := fmt.Sprintf("%s|%s|%d|%s", gap.Kind, gap.Path, gap.Line, gap.Detail)
+		if !seen[key] && len(out) < limit {
+			seen[key] = true
+			out = append(out, gap)
+		}
+	}
+	owner := controllerOwner(r.Controller)
+	key := methodKey(owner, r.Action, false)
+	if len(g.methods[key]) == 0 {
+		found := false
+		prefix := "app/views/" + r.Controller + "/" + r.Action + "."
+		for path := range g.files {
+			if strings.HasPrefix(path, prefix) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			add(TraceGap{Kind: "action_not_indexed", Path: r.Source, Line: r.Line, Detail: owner + "#" + r.Action, Reason: "нет метода действия или обычного шаблона в индексе; действие может быть унаследовано"})
+		}
+	}
+	visited := map[string]bool{}
+	var visit func(string, int)
+	visit = func(k string, depth int) {
+		if depth > 6 || visited[k] || len(out) >= limit {
+			return
+		}
+		visited[k] = true
+		defer delete(visited, k)
+		for _, gap := range g.callGaps[k] {
+			add(gap)
+		}
+		for _, render := range g.renders[k] {
+			switch render.Kind {
+			case "dynamic", "file":
+				add(TraceGap{Kind: "render_target_unresolved", Path: render.Path, Line: render.Line, Detail: render.Target, Reason: "цель render нельзя связать с шаблоном по исходному коду"})
+			case "response":
+				add(TraceGap{Kind: "non_template_response", Path: render.Path, Line: render.Line, Reason: "render формирует ответ без шаблона"})
+			case "redirect":
+				add(TraceGap{Kind: "redirect_not_followed", Path: render.Path, Line: render.Line, Reason: "переход через redirect не прослеживается"})
+			case "action", "template", "partial":
+				prefix := renderViewPath(r.Controller, render)
+				found := false
+				for path := range g.files {
+					if strings.HasPrefix(path, prefix+".") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					add(TraceGap{Kind: "template_not_indexed", Path: render.Path, Line: render.Line, Detail: render.Target, Reason: "явно указанный шаблон не найден в индексе"})
+				} else if len(viewRefs(g.files, prefix)) == 0 {
+					add(TraceGap{Kind: "template_without_reference", Path: render.Path, Line: render.Line, Detail: render.Target, Reason: "шаблон найден, но в нём нет распознанных обращений к таблице"})
+				}
+			}
+		}
+		for _, edge := range g.forward[k] {
+			visit(methodKey(edge.Target.Owner, edge.Target.Name, edge.Target.Class), depth+1)
+		}
+	}
+	visit(key, 0)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		if out[i].Line != out[j].Line {
+			return out[i].Line < out[j].Line
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
+}
+
 func traceReport(idx *Index, query string, routeMode bool, limit int) TraceReport {
 	g := buildGraph(idx)
-	report := TraceReport{Query: query, Chains: []TraceChain{}, Note: "Статическая оценка: маршруты, render шаблона и цели вызовов требуют проверки в работающем Rails; отсутствие цепочки не доказывает недостижимость."}
+	report := TraceReport{Query: query, Chains: []TraceChain{}, Note: "Статическая оценка по файлам проекта: условия маршрутов, render и цели вызовов могут зависеть от выполнения Ruby; отсутствие цепочки не доказывает недостижимость."}
 	verb, path, _ := strings.Cut(query, " ")
 	for _, r := range g.routes {
 		if routeMode && !(r.Path == query || (path != "" && r.Path == path && strings.EqualFold(r.Verb, verb))) {
@@ -480,6 +614,19 @@ func traceReport(idx *Index, query string, routeMode bool, limit int) TraceRepor
 			filter = ""
 		}
 		chains := g.routeChains(r, filter, limit-len(report.Chains)+1)
+		if routeMode {
+			gaps := g.routeGaps(r, limit-len(report.Gaps)+1)
+			if len(chains) == 0 && len(gaps) == 0 {
+				gaps = append(gaps, TraceGap{Kind: "no_indexed_reference", Path: r.Source, Line: r.Line, Detail: r.Controller + "#" + r.Action, Reason: "в прослеженных методах и шаблонах не найдено обращения к таблице"})
+			}
+			for _, gap := range gaps {
+				if len(report.Gaps) >= limit {
+					report.GapsTruncated = true
+					break
+				}
+				report.Gaps = append(report.Gaps, gap)
+			}
+		}
 		for _, chain := range chains {
 			if len(report.Chains) >= limit {
 				report.Truncated = true

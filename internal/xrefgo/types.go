@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 7
+const indexVersion = 8
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -26,6 +26,7 @@ type File struct {
 	Methods  []Method `json:"methods,omitempty"`
 	Calls    []Call   `json:"calls,omitempty"`
 	Routes   []Route  `json:"routes,omitempty"`
+	Renders  []Render `json:"renders,omitempty"`
 }
 
 type Method struct {
@@ -38,13 +39,14 @@ type Method struct {
 }
 
 type Call struct {
-	Owner       string `json:"owner"`
-	Source      string `json:"source"`
-	SourceClass bool   `json:"source_class,omitempty"`
-	Receiver    string `json:"receiver,omitempty"`
-	Method      string `json:"method"`
-	Path        string `json:"path"`
-	Line        int    `json:"line"`
+	Owner        string `json:"owner"`
+	Source       string `json:"source"`
+	SourceClass  bool   `json:"source_class,omitempty"`
+	Receiver     string `json:"receiver,omitempty"`
+	ReceiverKind string `json:"receiver_kind,omitempty"`
+	Method       string `json:"method"`
+	Path         string `json:"path"`
+	Line         int    `json:"line"`
 }
 
 type Route struct {
@@ -55,6 +57,16 @@ type Route struct {
 	Source     string `json:"source"`
 	Line       int    `json:"line"`
 	Confidence string `json:"confidence"`
+}
+
+type Render struct {
+	Owner       string `json:"owner"`
+	Source      string `json:"source"`
+	SourceClass bool   `json:"source_class,omitempty"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Kind        string `json:"kind"`
+	Target      string `json:"target,omitempty"`
 }
 
 type Schema struct {

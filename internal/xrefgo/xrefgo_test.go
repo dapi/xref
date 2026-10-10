@@ -1,6 +1,7 @@
 package xrefgo
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,40 @@ func TestSchemaAndSQLFacts(t *testing.T) {
 	aliased, err := parseSQL("SELECT p.id FROM products p")
 	if err != nil || !slices.Contains(aliased.Qualified["products"], "id") {
 		t.Fatalf("alias: %#v %v", aliased, err)
+	}
+}
+
+func TestRouteDoesNotReconnectPersistedLiveSchema(t *testing.T) {
+	root := t.TempDir()
+	var err error
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "db"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "db/structure.sql"), []byte("CREATE TABLE public.orders (id bigint);\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
+	}
+	path := filepath.Join(t.TempDir(), "index.json")
+	old := &Index{Version: indexVersion, Root: root, Files: map[string]File{}, Schemas: map[string]Schema{"stage": {Path: "pg:TEST"}}, ModelMap: map[string]ModelInfo{}}
+	if err := saveIndex(path, old); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XREF_TEST_PGHOST", "")
+	if err := Run([]string{"--project", root, "--index", path, "route", "GET /orders"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadIndex(path)
+	if err != nil || got == nil {
+		t.Fatalf("offline index: %v", err)
+	}
+	if len(got.Schemas) != 1 || len(got.Schemas["repo"].Tables["orders"]) != 1 {
+		t.Fatalf("offline schema fallback: %#v", got.Schemas)
 	}
 }
 
@@ -195,8 +230,12 @@ func TestLiveSchemaUsesReadOnlyCatalogAndFeedsDrift(t *testing.T) {
 		t.Fatalf("drift: %#v", drift(idx))
 	}
 	t.Setenv("XREF_TEST_PGHOST", "")
-	if _, _, err := refresh(root, filepath.Join(t.TempDir(), "missing.json"), idx, map[string]string{}); err == nil {
-		t.Fatal("lost live connection was treated as a fresh schema")
+	offline, _, err := refresh(root, filepath.Join(t.TempDir(), "offline.json"), idx, map[string]string{})
+	if err != nil || len(offline.Schemas) != 1 || len(offline.Schemas["repo"].Tables["products"]) != 1 {
+		t.Fatalf("implicit live reconnection: schemas=%d err=%v", len(offline.Schemas), err)
+	}
+	if _, _, err := refresh(root, filepath.Join(t.TempDir(), "missing.json"), idx, map[string]string{"repo": "db/structure.sql", "live": "pg:TEST"}); err == nil {
+		t.Fatal("explicit live connection failure was ignored")
 	}
 	if _, err := parseLiveSchema("test;evil"); err == nil {
 		t.Fatal("accepted invalid source name")

@@ -75,10 +75,21 @@ func Run(args []string, out io.Writer) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if old == nil && len(schemas) == 0 {
+	if len(schemas) == 0 {
+		hasLocal := false
+		if old != nil {
+			for _, s := range old.Schemas {
+				if !strings.HasPrefix(s.Path, "pg:") {
+					hasLocal = true
+					break
+				}
+			}
+		}
 		defaultPath := filepath.Join(root, "db/structure.sql")
-		if _, err := os.Stat(defaultPath); err == nil {
-			schemas["repo"] = "db/structure.sql"
+		if !hasLocal {
+			if _, err := os.Stat(defaultPath); err == nil {
+				schemas["repo"] = "db/structure.sql"
+			}
 		}
 	}
 	idx, changed, err := refresh(root, path, old, schemas)
@@ -367,13 +378,25 @@ func audit(idx *Index, changed int, path string) map[string]any {
 			}
 		}
 	}
-	methods, calls, routes := 0, 0, 0
+	methods, calls, routes, renders, redirects, dynamicReceivers := 0, 0, 0, 0, 0, 0
 	for _, f := range idx.Files {
 		methods += len(f.Methods)
 		calls += len(f.Calls)
 		routes += len(f.Routes)
+		for _, r := range f.Renders {
+			if r.Kind == "redirect" {
+				redirects++
+			} else {
+				renders++
+			}
+		}
+		for _, c := range f.Calls {
+			if c.ReceiverKind == "dynamic" {
+				dynamicReceivers++
+			}
+		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "calls": calls, "route_candidates": routes, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "calls": calls, "route_candidates": routes, "render_calls": renders, "redirect_calls": redirects, "dynamic_receivers": dynamicReceivers, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Explicit render links cover literal action, template and partial targets; branches and custom renderers are unresolved", "Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
@@ -438,6 +461,16 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 				name += "." + chain.Ref.Column
 			}
 			fmt.Fprintf(out, "  → %s:%d %s [%s]\n", chain.Ref.Path, chain.Ref.Line, name, chain.Ref.Confidence)
+		}
+		if len(x.Gaps) > 0 {
+			fmt.Fprintf(out, "Пробелы трассировки: %d", len(x.Gaps))
+			if x.GapsTruncated {
+				fmt.Fprint(out, " (вывод ограничен)")
+			}
+			fmt.Fprintln(out)
+			for _, gap := range x.Gaps {
+				fmt.Fprintf(out, "  %s:%d %s %s — %s\n", gap.Path, gap.Line, gap.Kind, gap.Detail, gap.Reason)
+			}
 		}
 		fmt.Fprintln(out, x.Note)
 	case CallerReport:

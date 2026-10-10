@@ -7,9 +7,9 @@ import (
 
 func TestRouteAndCallTrace(t *testing.T) {
 	routePath := "config/routes/operator.rb"
-	routeSrc := []byte("scope module: :operator, path: 'operator' do\n  resources :currencies, only: %i[index create] do\n    member do\n      get :history, to: 'currencies#history'\n    end\n    resources :rates, only: [:show]\n  end\n  get 'rates', to: 'currencies#index'\n  get 'legacy' => 'currencies#show'\nend\n")
-	_, _, routes := scanGraph(routePath, routeSrc)
-	var indexRoute, createRoute, memberRoute, nestedRoute, legacyRoute bool
+	routeSrc := []byte("scope module: :operator, path: 'operator' do\n  root 'currencies#index'\n  resources :currencies, only: %i[index create] do\n    member do\n      get :history, to: 'currencies#history'\n    end\n    resources :rates, only: [:show]\n  end\n  get 'rates', to: 'currencies#index'\n  get 'legacy' => 'currencies#show'\nend\n")
+	_, _, routes, _ := scanGraph(routePath, routeSrc)
+	var indexRoute, createRoute, memberRoute, nestedRoute, legacyRoute, rootRoute bool
 	for _, r := range routes {
 		if r.Path == "/operator/currencies" && r.Controller == "operator/currencies" {
 			if r.Verb == "GET" && r.Action == "index" {
@@ -28,16 +28,19 @@ func TestRouteAndCallTrace(t *testing.T) {
 		if r.Path == "/operator/legacy" && r.Action == "show" {
 			legacyRoute = true
 		}
+		if r.Path == "/operator" && r.Verb == "GET" && r.Controller == "operator/currencies" && r.Action == "index" {
+			rootRoute = true
+		}
 	}
-	if !indexRoute || !createRoute || !memberRoute || !nestedRoute || !legacyRoute {
+	if !indexRoute || !createRoute || !memberRoute || !nestedRoute || !legacyRoute || !rootRoute {
 		t.Fatalf("routes: %#v", routes)
 	}
 	controllerPath := "app/controllers/operator/currencies_controller.rb"
 	controllerSrc := []byte("class Operator::CurrenciesController < ApplicationController\n def create\n  ExchangeRate.add_rate\n end\nend\n")
 	modelPath := "app/models/exchange_rate.rb"
 	modelSrc := []byte("class ExchangeRate < ApplicationRecord\n def self.add_rate\n  ExchangeRate.where(id: 1)\n end\nend\n")
-	cm, cc, _ := scanGraph(controllerPath, controllerSrc)
-	mm, _, _ := scanGraph(modelPath, modelSrc)
+	cm, cc, _, _ := scanGraph(controllerPath, controllerSrc)
+	mm, _, _, _ := scanGraph(modelPath, modelSrc)
 	if len(cm) != 1 || len(mm) != 1 || len(cc) == 0 {
 		t.Fatalf("graph: %#v %#v %#v", cm, mm, cc)
 	}
@@ -63,7 +66,7 @@ func TestRouteAndCallTrace(t *testing.T) {
 
 func TestDynamicReceiverDoesNotInventCallEdge(t *testing.T) {
 	path := "app/controllers/orders_controller.rb"
-	methods, calls, _ := scanGraph(path, []byte("class OrdersController\n def show\n  service.call\n end\nend\n"))
+	methods, calls, _, _ := scanGraph(path, []byte("class OrdersController\n def show\n  service.call\n end\n def call\n  Vendor.where(id: 1)\n end\nend\n"))
 	idx := &Index{Files: map[string]File{path: {Methods: methods, Calls: calls}, "app/services/service.rb": {Methods: []Method{{Owner: "Service", Name: "call", Path: "app/services/service.rb", Line: 1, EndLine: 2}}}}}
 	for _, edges := range buildGraph(idx).forward {
 		if len(edges) > 0 {
@@ -75,11 +78,45 @@ func TestDynamicReceiverDoesNotInventCallEdge(t *testing.T) {
 	}
 }
 
+func TestExplicitRenderAndTraceGaps(t *testing.T) {
+	controllerPath := "app/controllers/orders_controller.rb"
+	src := []byte("class OrdersController\n def index\n  render :summary\n end\n def show\n  render template: 'shared/report'\n end\n def fragment\n  render partial: 'shared/card'\n end\n def export\n  render json: {ok: true}\n end\n def dynamic\n  render params[:page]\n end\n def leave\n  redirect_to '/home'\n end\nend\n")
+	methods, calls, _, renders := scanGraph(controllerPath, src)
+	if len(renders) != 6 {
+		t.Fatalf("renders: %#v", renders)
+	}
+	routes := []Route{{Verb: "GET", Path: "/orders", Controller: "orders", Action: "index", Source: "config/routes.rb", Line: 1}, {Verb: "GET", Path: "/orders/:id", Controller: "orders", Action: "show", Source: "config/routes.rb", Line: 2}, {Verb: "GET", Path: "/fragment", Controller: "orders", Action: "fragment", Source: "config/routes.rb", Line: 3}, {Verb: "GET", Path: "/export", Controller: "orders", Action: "export", Source: "config/routes.rb", Line: 4}, {Verb: "GET", Path: "/dynamic", Controller: "orders", Action: "dynamic", Source: "config/routes.rb", Line: 5}, {Verb: "GET", Path: "/missing", Controller: "orders", Action: "missing", Source: "config/routes.rb", Line: 6}, {Verb: "GET", Path: "/leave", Controller: "orders", Action: "leave", Source: "config/routes.rb", Line: 7}}
+	idx := &Index{Files: map[string]File{
+		"config/routes.rb": {Routes: routes}, controllerPath: {Methods: methods, Calls: calls, Renders: renders},
+		"app/views/orders/summary.html.haml": {Refs: []Ref{{Path: "app/views/orders/summary.html.haml", Line: 2, Table: "orders", Kind: "orm_table", Confidence: "candidate"}}},
+		"app/views/shared/report.html.erb":   {Refs: []Ref{{Path: "app/views/shared/report.html.erb", Line: 4, Table: "orders", Kind: "orm_table", Confidence: "candidate"}}},
+		"app/views/shared/_card.html.erb":    {Refs: []Ref{{Path: "app/views/shared/_card.html.erb", Line: 2, Table: "orders", Kind: "orm_table", Confidence: "candidate"}}},
+	}}
+	for _, query := range []string{"GET /orders", "GET /orders/:id", "GET /fragment"} {
+		report := traceReport(idx, query, true, 10)
+		if len(report.Chains) != 1 || len(report.Chains[0].Steps) != 3 || report.Chains[0].Steps[1].Kind != "render" {
+			t.Fatalf("%s: %#v", query, report)
+		}
+	}
+	for query, kind := range map[string]string{"GET /export": "non_template_response", "GET /dynamic": "render_target_unresolved", "GET /missing": "action_not_indexed", "GET /leave": "redirect_not_followed"} {
+		report := traceReport(idx, query, true, 10)
+		found := false
+		for _, gap := range report.Gaps {
+			if gap.Kind == kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s missing %s: %#v", query, kind, report)
+		}
+	}
+}
+
 func TestConstructorReachesInitialize(t *testing.T) {
 	controllerPath := "app/controllers/stores_controller.rb"
 	servicePath := "app/queries/stores_query.rb"
-	cm, cc, _ := scanGraph(controllerPath, []byte("class StoresController\n def index\n  StoresQuery.new.call\n end\nend\n"))
-	sm, sc, _ := scanGraph(servicePath, []byte("class StoresQuery\n def initialize\n  Vendor.where(active: true)\n end\n def call\n end\nend\n"))
+	cm, cc, _, _ := scanGraph(controllerPath, []byte("class StoresController\n def index\n  StoresQuery.new.call\n end\nend\n"))
+	sm, sc, _, _ := scanGraph(servicePath, []byte("class StoresQuery\n def initialize\n  Vendor.where(active: true)\n end\n def call\n end\nend\n"))
 	idx := &Index{Files: map[string]File{
 		"config/routes.rb": {Routes: []Route{{Verb: "GET", Path: "/stores", Controller: "stores", Action: "index"}}},
 		controllerPath:     {Methods: cm, Calls: cc},
