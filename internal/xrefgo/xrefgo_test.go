@@ -153,6 +153,56 @@ func TestDriftKeepsSourceProvenance(t *testing.T) {
 	}
 }
 
+func TestLiveSchemaUsesReadOnlyCatalogAndFeedsDrift(t *testing.T) {
+	tools := t.TempDir()
+	psql := filepath.Join(tools, "psql")
+	script := "#!/bin/sh\n" +
+		"[ \"$PGDATABASE\" = xref_test ] || exit 10\n" +
+		"[ \"$PGPASSWORD\" = test_password ] || exit 11\n" +
+		"case \"$*\" in *BEGIN\\ READ\\ ONLY*) ;; *) exit 12;; esac\n" +
+		"case \"$*\" in *test_password*) exit 13;; esac\n" +
+		"printf '%s\\n' '{\"products\":[\"id\",\"name\"],\"orders\":[\"id\"]}'\n"
+	if err := os.WriteFile(psql, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XREF_TEST_PGHOST", "127.0.0.1")
+	t.Setenv("XREF_TEST_PGUSER", "xref")
+	t.Setenv("XREF_TEST_PGDATABASE", "xref_test")
+	t.Setenv("XREF_TEST_PGPASSWORD", "test_password")
+	live, err := parseLiveSchema("TEST")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Path != "pg:TEST" || !slices.Equal(live.Tables["products"], []string{"id", "name"}) {
+		t.Fatalf("live schema: %#v", live)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "db"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "db/structure.sql"), []byte("CREATE TABLE public.products (id bigint);\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
+	}
+	idx, _, err := refresh(root, filepath.Join(t.TempDir(), "index.json"), nil, map[string]string{"repo": "db/structure.sql", "live": "pg:TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drift(idx)) != 3 {
+		t.Fatalf("drift: %#v", drift(idx))
+	}
+	t.Setenv("XREF_TEST_PGHOST", "")
+	if _, _, err := refresh(root, filepath.Join(t.TempDir(), "missing.json"), idx, map[string]string{}); err == nil {
+		t.Fatal("lost live connection was treated as a fresh schema")
+	}
+	if _, err := parseLiveSchema("test;evil"); err == nil {
+		t.Fatal("accepted invalid source name")
+	}
+}
+
 func TestRefreshDetectsChangedRubyAndSearchesTemplates(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{"app/models", "app/views", "db"} {

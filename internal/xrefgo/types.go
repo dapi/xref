@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 5
+const indexVersion = 6
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
