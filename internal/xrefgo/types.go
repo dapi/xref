@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 6
+const indexVersion = 7
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -17,12 +17,44 @@ type Ref struct {
 }
 
 type File struct {
-	Size     int64  `json:"size"`
-	ModTime  int64  `json:"mtime"`
-	SHA256   string `json:"sha256"`
-	Refs     []Ref  `json:"refs,omitempty"`
-	Errors   int    `json:"errors,omitempty"`
-	Segments int    `json:"template_segments,omitempty"`
+	Size     int64    `json:"size"`
+	ModTime  int64    `json:"mtime"`
+	SHA256   string   `json:"sha256"`
+	Refs     []Ref    `json:"refs,omitempty"`
+	Errors   int      `json:"errors,omitempty"`
+	Segments int      `json:"template_segments,omitempty"`
+	Methods  []Method `json:"methods,omitempty"`
+	Calls    []Call   `json:"calls,omitempty"`
+	Routes   []Route  `json:"routes,omitempty"`
+}
+
+type Method struct {
+	Owner   string `json:"owner"`
+	Name    string `json:"name"`
+	Class   bool   `json:"class,omitempty"`
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	EndLine int    `json:"end_line"`
+}
+
+type Call struct {
+	Owner       string `json:"owner"`
+	Source      string `json:"source"`
+	SourceClass bool   `json:"source_class,omitempty"`
+	Receiver    string `json:"receiver,omitempty"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+}
+
+type Route struct {
+	Verb       string `json:"verb"`
+	Path       string `json:"path"`
+	Controller string `json:"controller"`
+	Action     string `json:"action"`
+	Source     string `json:"source"`
+	Line       int    `json:"line"`
+	Confidence string `json:"confidence"`
 }
 
 type Schema struct {
