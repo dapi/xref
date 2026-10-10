@@ -117,7 +117,7 @@ func skipCodePath(path string) bool {
 
 func scanExtension(path string) bool {
 	switch filepath.Ext(path) {
-	case ".rb", ".rake", ".ru", ".sql":
+	case ".rb", ".rake", ".ru", ".sql", ".erb", ".haml":
 		return true
 	}
 	return false
@@ -259,12 +259,15 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 		}
 		var refs []Ref
 		parseErrors := 0
+		segments := 0
 		if strings.HasSuffix(rel, ".sql") {
 			appendSQL(&refs, rel, 1, string(b), false)
+		} else if strings.HasSuffix(rel, ".erb") || strings.HasSuffix(rel, ".haml") {
+			refs, parseErrors, segments = scanTemplate(rel, b, idx.ModelMap)
 		} else {
 			refs, parseErrors = scanRuby(rel, b, idx.ModelMap)
 		}
-		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors}
+		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors, Segments: segments}
 		changed++
 	}
 	for _, f := range idx.Files {

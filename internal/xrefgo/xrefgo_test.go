@@ -125,7 +125,7 @@ func TestRefreshDetectsChangedRubyAndSearchesTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("first changed=%d", n)
 	}
 	second, n, err := refresh(root, idxPath, idx, map[string]string{})
@@ -149,8 +149,34 @@ func TestRefreshDetectsChangedRubyAndSearchesTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || hits[0].Indexed || !strings.HasSuffix(hits[0].Path, "example.erb") {
+	if len(hits) != 1 || !hits[0].Indexed || !strings.HasSuffix(hits[0].Path, "example.erb") {
 		t.Fatalf("hits: %#v", hits)
+	}
+}
+
+func TestTemplateRubyReferencesAndSourceLines(t *testing.T) {
+	models := map[string]ModelInfo{"Product": {Table: "products", Verified: true}}
+	erb := []byte("<%%= Product.where(id: 0) %>\n<%# Product.where(id: 0) %>\n<p><%= Product.where(\n  id: 1\n) %></p>\n")
+	refs, errors, segments := scanTemplate("app/views/show.html.erb", erb, models)
+	if errors != 0 || segments != 1 || len(where(&Index{Files: map[string]File{"x": {Refs: refs}}}, "products.id")) != 1 {
+		t.Fatalf("ERB refs=%#v errors=%d segments=%d", refs, errors, segments)
+	}
+	for _, r := range refs {
+		if r.Line != 3 {
+			t.Fatalf("ERB line: %#v", r)
+		}
+	}
+	haml := []byte("-# = Product.where(id: 0)\n%p literal Product.where(id: 0)\n= Product.where(\n  id: 2\n)\n%div{data: Product.where(id: 3)}\nText #{Product.where(id: 4)}\n%span= Product.where(id: 5)\n%div{title: 'x'}= Product.where(id: 6)\n%p Text #{Product.where(id: 7)}\n")
+	refs, errors, segments = scanTemplate("app/views/show.html.haml", haml, models)
+	if errors != 0 || segments != 7 {
+		t.Fatalf("Haml refs=%#v errors=%d segments=%d", refs, errors, segments)
+	}
+	lines := map[int]bool{}
+	for _, r := range where(&Index{Files: map[string]File{"x": {Refs: refs}}}, "products.id") {
+		lines[r.Line] = true
+	}
+	if len(lines) != 6 || !lines[3] || !lines[6] || !lines[7] || !lines[8] || !lines[9] || !lines[10] {
+		t.Fatalf("Haml lines: %#v, refs=%#v", lines, refs)
 	}
 }
 
