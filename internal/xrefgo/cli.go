@@ -326,6 +326,7 @@ func audit(idx *Index, changed int, path string) map[string]any {
 	parseErrors := 0
 	templateFiles, templateSegments, templateErrors := 0, 0, 0
 	byKind := map[string]int{}
+	holeContexts := map[string]int{}
 	for name, f := range idx.Files {
 		parseErrors += f.Errors
 		if strings.HasSuffix(name, ".erb") || strings.HasSuffix(name, ".haml") {
@@ -336,6 +337,9 @@ func audit(idx *Index, changed int, path string) map[string]any {
 		for _, r := range f.Refs {
 			refs++
 			byKind[r.Kind]++
+			if r.Kind == "sql_hole" {
+				holeContexts[r.Detail]++
+			}
 		}
 	}
 	schemaErrors := map[string]int{}
@@ -353,7 +357,7 @@ func audit(idx *Index, changed int, path string) map[string]any {
 			}
 		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "limitations": []string{"Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "only CREATE TABLE statements in pg_dump structure.sql are indexed", "live databases and production logs are not connected"}}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "limitations": []string{"Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "only CREATE TABLE statements in pg_dump structure.sql are indexed", "live databases and production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {

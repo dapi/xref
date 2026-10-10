@@ -66,6 +66,56 @@ func TestRubyReferencesKeepEvidenceLevels(t *testing.T) {
 	}
 }
 
+func TestSQLInterpolationDoesNotInventTables(t *testing.T) {
+	query, holes, unsafe := substituteSQLHoles("SELECT * FROM shard_#{n}", 10)
+	if query != "SELECT * FROM shard_$1" || !unsafe || len(holes) != 1 || holes[0].Context != "glue" {
+		t.Fatalf("glued interpolation: %q %#v unsafe=%v", query, holes, unsafe)
+	}
+	refs, errors := scanRuby("app/demo.rb", []byte("execute(\"SELECT * FROM shard_#{n}\")\n"), nil)
+	if errors != 0 {
+		t.Fatalf("Ruby parse errors: %d", errors)
+	}
+	for _, ref := range refs {
+		if ref.Table != "" {
+			t.Fatalf("invented table: %#v", refs)
+		}
+	}
+	if !hasRefKind(refs, "sql_blind") || !hasRefKind(refs, "sql_hole") {
+		t.Fatalf("missing blind spot: %#v", refs)
+	}
+
+	refs, errors = scanRuby("app/demo.rb", []byte("execute(\"SELECT products.id FROM products WHERE products.id = #{id}\")\n"), nil)
+	if errors != 0 || !hasRefTable(refs, "products") || hasRefKind(refs, "sql_blind") {
+		t.Fatalf("value interpolation: %#v errors=%d", refs, errors)
+	}
+	if len(refs) == 0 || !hasRefKind(refs, "sql_hole") {
+		t.Fatalf("missing value hole: %#v", refs)
+	}
+
+	query, holes, unsafe = substituteSQLHoles("SELECT id FROM products WHERE name LIKE '%#{term}%'\n AND id IN (#{ids.map { |x| x.id }.join(',')})", 20)
+	if unsafe || len(holes) != 2 || holes[0].Context != "quoted" || holes[1].Line != 21 || holes[0].Offset == holes[1].Offset {
+		t.Fatalf("multi-hole interpolation: %q %#v unsafe=%v", query, holes, unsafe)
+	}
+}
+
+func hasRefKind(refs []Ref, kind string) bool {
+	for _, r := range refs {
+		if r.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRefTable(refs []Ref, table string) bool {
+	for _, r := range refs {
+		if r.Table == table {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBlindExcludesTestsAndCatalogs(t *testing.T) {
 	idx := &Index{Schemas: map[string]Schema{"repo": {Tables: map[string][]string{"products": {"id"}}}}, Files: map[string]File{
 		"app/x.rb":       {Refs: []Ref{{Path: "app/x.rb", Line: 1, Kind: "parsed_sql", Table: "missing", Confidence: "fact"}, {Path: "app/x.rb", Line: 2, Kind: "parsed_sql", Table: "pg_trigger", Confidence: "fact"}}},
