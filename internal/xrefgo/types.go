@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 8
+const indexVersion = 9
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -17,16 +17,17 @@ type Ref struct {
 }
 
 type File struct {
-	Size     int64    `json:"size"`
-	ModTime  int64    `json:"mtime"`
-	SHA256   string   `json:"sha256"`
-	Refs     []Ref    `json:"refs,omitempty"`
-	Errors   int      `json:"errors,omitempty"`
-	Segments int      `json:"template_segments,omitempty"`
-	Methods  []Method `json:"methods,omitempty"`
-	Calls    []Call   `json:"calls,omitempty"`
-	Routes   []Route  `json:"routes,omitempty"`
-	Renders  []Render `json:"renders,omitempty"`
+	Size     int64          `json:"size"`
+	ModTime  int64          `json:"mtime"`
+	SHA256   string         `json:"sha256"`
+	Refs     []Ref          `json:"refs,omitempty"`
+	Errors   int            `json:"errors,omitempty"`
+	Segments int            `json:"template_segments,omitempty"`
+	Methods  []Method       `json:"methods,omitempty"`
+	Calls    []Call         `json:"calls,omitempty"`
+	Routes   []Route        `json:"routes,omitempty"`
+	Renders  []Render       `json:"renders,omitempty"`
+	Locals   []LocalBinding `json:"locals,omitempty"`
 }
 
 type Method struct {
@@ -36,6 +37,7 @@ type Method struct {
 	Path    string `json:"path"`
 	Line    int    `json:"line"`
 	EndLine int    `json:"end_line"`
+	Kind    string `json:"kind,omitempty"`
 }
 
 type Call struct {
@@ -47,6 +49,18 @@ type Call struct {
 	Method       string `json:"method"`
 	Path         string `json:"path"`
 	Line         int    `json:"line"`
+	Direct       bool   `json:"direct,omitempty"`
+}
+
+type LocalBinding struct {
+	Owner       string `json:"owner"`
+	Source      string `json:"source"`
+	SourceClass bool   `json:"source_class,omitempty"`
+	Name        string `json:"name"`
+	Target      string `json:"target,omitempty"`
+	Class       bool   `json:"class,omitempty"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
 }
 
 type Route struct {
