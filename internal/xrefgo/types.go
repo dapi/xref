@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 3
+const indexVersion = 4
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -16,11 +16,12 @@ type Ref struct {
 }
 
 type File struct {
-	Size    int64  `json:"size"`
-	ModTime int64  `json:"mtime"`
-	SHA256  string `json:"sha256"`
-	Refs    []Ref  `json:"refs,omitempty"`
-	Errors  int    `json:"errors,omitempty"`
+	Size     int64  `json:"size"`
+	ModTime  int64  `json:"mtime"`
+	SHA256   string `json:"sha256"`
+	Refs     []Ref  `json:"refs,omitempty"`
+	Errors   int    `json:"errors,omitempty"`
+	Segments int    `json:"template_segments,omitempty"`
 }
 
 type Schema struct {
