@@ -172,11 +172,16 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 		}
 	}
 	for name, sp := range schemaPaths {
-		absolute := sp
-		if !filepath.IsAbs(sp) {
-			absolute = filepath.Join(root, sp)
+		var s Schema
+		if strings.HasPrefix(sp, "pg:") {
+			s, err = parseLiveSchema(strings.TrimPrefix(sp, "pg:"))
+		} else {
+			absolute := sp
+			if !filepath.IsAbs(sp) {
+				absolute = filepath.Join(root, sp)
+			}
+			s, err = parseSchema(absolute)
 		}
-		s, err := parseSchema(absolute)
 		if err != nil {
 			return nil, 0, fmt.Errorf("схема %s: %w", name, err)
 		}

@@ -34,7 +34,7 @@ func Run(args []string, out io.Writer) error {
 	limit := fs.Int("limit", 50, "число строк в отчёте")
 	includeTests := fs.Bool("include-tests", false, "учитывать тестовый код в blind")
 	schemas := schemaFlags{}
-	fs.Var(schemas, "schema", "источник схемы: имя=путь, можно повторять")
+	fs.Var(schemas, "schema", "источник схемы: имя=путь или имя=pg:ИСТОЧНИК, можно повторять")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(out, usage())
@@ -128,7 +128,7 @@ func Run(args []string, out io.Writer) error {
 }
 
 func usage() string {
-	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit"
+	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ|pg:ИСТОЧНИК] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit"
 }
 
 func allRefs(idx *Index) []Ref {
@@ -357,7 +357,7 @@ func audit(idx *Index, changed int, path string) map[string]any {
 			}
 		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "limitations": []string{"Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "only CREATE TABLE statements in pg_dump structure.sql are indexed", "live databases and production logs are not connected"}}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "limitations": []string{"Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
