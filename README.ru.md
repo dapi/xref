@@ -1,5 +1,11 @@
 # xref
 
+> Форк [xref](https://github.com/nikgrebnev/xref) автора
+> [Nik Grebnev](https://github.com/nikgrebnev).
+> Исходный Ruby-движок и спецификация сохранены на условиях
+> [MIT](LICENSE) и [CC BY 4.0](LICENSE-docs). В этом форке добавлен
+> [экспериментальный Go-порт для Ruby/Rails](doc/go-port.md).
+
 **Индекс кода и живых схем — настолько быстрый, чтобы пользоваться им вместо текстового поиска.**
 
 [English](README.md) · [Русский](README.ru.md)
