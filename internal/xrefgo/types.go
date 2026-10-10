@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 9
+const indexVersion = 10
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -14,20 +14,24 @@ type Ref struct {
 	Column     string `json:"column,omitempty"`
 	Confidence string `json:"confidence"`
 	Detail     string `json:"detail,omitempty"`
+	ScopeOwner string `json:"scope_owner,omitempty"`
+	ScopeName  string `json:"scope_name,omitempty"`
 }
 
 type File struct {
-	Size     int64          `json:"size"`
-	ModTime  int64          `json:"mtime"`
-	SHA256   string         `json:"sha256"`
-	Refs     []Ref          `json:"refs,omitempty"`
-	Errors   int            `json:"errors,omitempty"`
-	Segments int            `json:"template_segments,omitempty"`
-	Methods  []Method       `json:"methods,omitempty"`
-	Calls    []Call         `json:"calls,omitempty"`
-	Routes   []Route        `json:"routes,omitempty"`
-	Renders  []Render       `json:"renders,omitempty"`
-	Locals   []LocalBinding `json:"locals,omitempty"`
+	Size          int64          `json:"size"`
+	ModTime       int64          `json:"mtime"`
+	SHA256        string         `json:"sha256"`
+	Refs          []Ref          `json:"refs,omitempty"`
+	Errors        int            `json:"errors,omitempty"`
+	Segments      int            `json:"template_segments,omitempty"`
+	Methods       []Method       `json:"methods,omitempty"`
+	Calls         []Call         `json:"calls,omitempty"`
+	Routes        []Route        `json:"routes,omitempty"`
+	Renders       []Render       `json:"renders,omitempty"`
+	Locals        []LocalBinding `json:"locals,omitempty"`
+	Includes      []ModelInclude `json:"includes,omitempty"`
+	ConcernScopes []ConcernScope `json:"concern_scopes,omitempty"`
 }
 
 type Method struct {
@@ -41,15 +45,37 @@ type Method struct {
 }
 
 type Call struct {
-	Owner        string `json:"owner"`
-	Source       string `json:"source"`
-	SourceClass  bool   `json:"source_class,omitempty"`
-	Receiver     string `json:"receiver,omitempty"`
-	ReceiverKind string `json:"receiver_kind,omitempty"`
-	Method       string `json:"method"`
-	Path         string `json:"path"`
-	Line         int    `json:"line"`
-	Direct       bool   `json:"direct,omitempty"`
+	Owner        string   `json:"owner"`
+	Source       string   `json:"source"`
+	SourceClass  bool     `json:"source_class,omitempty"`
+	Receiver     string   `json:"receiver,omitempty"`
+	ReceiverKind string   `json:"receiver_kind,omitempty"`
+	Method       string   `json:"method"`
+	Path         string   `json:"path"`
+	Line         int      `json:"line"`
+	Direct       bool     `json:"direct,omitempty"`
+	Prefix       []string `json:"prefix,omitempty"`
+}
+
+type ModelInclude struct {
+	Owner  string `json:"owner"`
+	Module string `json:"module"`
+}
+
+type ConcernScope struct {
+	Module  string     `json:"module"`
+	Name    string     `json:"name"`
+	Path    string     `json:"path"`
+	Line    int        `json:"line"`
+	EndLine int        `json:"end_line"`
+	Uses    []ScopeUse `json:"uses,omitempty"`
+}
+
+type ScopeUse struct {
+	Method  string   `json:"method"`
+	Line    int      `json:"line"`
+	Columns []string `json:"columns,omitempty"`
+	Via     string   `json:"via,omitempty"`
 }
 
 type LocalBinding struct {
