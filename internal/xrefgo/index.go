@@ -269,6 +269,7 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 		var calls []Call
 		var routes []Route
 		var renders []Render
+		var locals []LocalBinding
 		parseErrors := 0
 		segments := 0
 		if strings.HasSuffix(rel, ".sql") {
@@ -277,9 +278,12 @@ func refresh(root, path string, previous *Index, schemaPaths map[string]string) 
 			refs, parseErrors, segments = scanTemplate(rel, b, idx.ModelMap)
 		} else {
 			refs, parseErrors = scanRuby(rel, b, idx.ModelMap)
-			methods, calls, routes, renders = scanGraph(rel, b)
+			methods, calls, routes, renders, locals = scanGraph(rel, b)
+			scopeMethods, scopeRefs := scanRailsScopes(rel, b, idx.ModelMap)
+			methods = append(methods, scopeMethods...)
+			refs = dedup(append(refs, scopeRefs...))
 		}
-		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors, Segments: segments, Methods: methods, Calls: calls, Routes: routes, Renders: renders}
+		idx.Files[rel] = File{Size: info.Size(), ModTime: info.ModTime().UnixNano(), SHA256: sha, Refs: refs, Errors: parseErrors, Segments: segments, Methods: methods, Calls: calls, Routes: routes, Renders: renders, Locals: locals}
 		changed++
 	}
 	for _, f := range idx.Files {

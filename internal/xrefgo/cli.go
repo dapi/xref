@@ -379,8 +379,15 @@ func audit(idx *Index, changed int, path string) map[string]any {
 		}
 	}
 	methods, calls, routes, renders, redirects, dynamicReceivers := 0, 0, 0, 0, 0, 0
+	scopes, localBindings, variableReceivers := 0, 0, 0
 	for _, f := range idx.Files {
 		methods += len(f.Methods)
+		localBindings += len(f.Locals)
+		for _, m := range f.Methods {
+			if m.Kind == "scope" {
+				scopes++
+			}
+		}
 		calls += len(f.Calls)
 		routes += len(f.Routes)
 		for _, r := range f.Renders {
@@ -393,10 +400,20 @@ func audit(idx *Index, changed int, path string) map[string]any {
 		for _, c := range f.Calls {
 			if c.ReceiverKind == "dynamic" {
 				dynamicReceivers++
+			} else if c.ReceiverKind == "variable" {
+				variableReceivers++
 			}
 		}
 	}
-	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "calls": calls, "route_candidates": routes, "render_calls": renders, "redirect_calls": redirects, "dynamic_receivers": dynamicReceivers, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Explicit render links cover literal action, template and partial targets; branches and custom renderers are unresolved", "Ruby dynamic dispatch and variable-held models are unresolved", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
+	resolvedVariableCalls := 0
+	for _, edges := range buildGraph(idx).forward {
+		for _, edge := range edges {
+			if edge.Call.ReceiverKind == "variable" {
+				resolvedVariableCalls++
+			}
+		}
+	}
+	return map[string]any{"project": idx.Root, "index": path, "updated": idx.Updated, "indexed_files": len(idx.Files), "changed_files": changed, "references": refs, "reference_kinds": byKind, "sql_hole_contexts": holeContexts, "ruby_parse_errors": parseErrors - templateErrors, "template_delimiter_errors": templateErrors, "template_files": templateFiles, "template_ruby_segments": templateSegments, "sql_blind_spots": idx.BlindSpots, "schemas": schemaSummary(idx), "schema_parse_errors": schemaErrors, "model_mappings": len(idx.ModelMap), "ambiguous_models": len(idx.AmbiguousModels), "unparsed_templates": unsupported, "methods": methods, "scope_declarations": scopes, "calls": calls, "local_bindings": localBindings, "variable_receivers": variableReceivers, "resolved_variable_calls": resolvedVariableCalls, "route_candidates": routes, "render_calls": renders, "redirect_calls": redirects, "dynamic_receivers": dynamicReceivers, "limitations": []string{"Static routes and calls are candidates; Rails runtime routing, filters, dynamic dispatch and redirects are unresolved", "Explicit render links cover literal action, template and partial targets; branches and custom renderers are unresolved", "Variable calls require one direct local assignment of a class constant or Class.new; reassignment and branches remain unresolved", "Rails scopes are recognized only for literal names and inline lambdas on mapped models", "ERB/Haml extraction covers common Ruby tags, script lines, attributes and interpolation but not the full template languages", "Slim and other template formats are not parsed", "repository structure.sql supports CREATE TABLE only; live PostgreSQL sources read public tables", "production logs are not connected"}}
 }
 
 func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {

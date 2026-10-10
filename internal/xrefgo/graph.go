@@ -11,15 +11,16 @@ import (
 
 // scanGraph records syntax facts. Resolution of calls and Rails routes happens
 // separately, so a parsed call never implies that Ruby will dispatch to it.
-func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
+func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []LocalBinding) {
 	p, tree, err := rubyTree(src)
 	if err != nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	defer p.Close()
 	defer tree.Close()
 	methods, calls, routes := []Method{}, []Call{}, []Route{}
 	renders := []Render{}
+	locals := []LocalBinding{}
 	var walk func(*ts.Node, string, string, bool, routeScope)
 	walk = func(n *ts.Node, owner, source string, sourceClass bool, scope routeScope) {
 		switch n.Kind() {
@@ -36,6 +37,7 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
 			class := n.Kind() == "singleton_method"
 			if owner != "" && name != "" {
 				methods = append(methods, Method{Owner: owner, Name: name, Class: class, Path: path, Line: int(n.StartPosition().Row) + 1, EndLine: int(n.EndPosition().Row) + 1})
+				locals = append(locals, methodBindings(path, n, src, owner, name, class)...)
 			}
 			source, sourceClass = name, class
 		case "call":
@@ -59,6 +61,9 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
 				if receiver != nil {
 					receiverKind = "dynamic"
 					switch receiver.Kind() {
+					case "identifier":
+						value = receiver.Utf8Text(src)
+						receiverKind = "variable"
 					case "self":
 						value = "self"
 						receiverKind = "self"
@@ -74,7 +79,7 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
 						}
 					}
 				}
-				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, ReceiverKind: receiverKind, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1})
+				calls = append(calls, Call{Owner: owner, Source: source, SourceClass: sourceClass, Receiver: value, ReceiverKind: receiverKind, Method: name, Path: path, Line: int(n.StartPosition().Row) + 1, Direct: directStatementCall(n)})
 			}
 			if strings.HasPrefix(path, "config/routes") {
 				routes = append(routes, routeFromCall(path, src, n, scope)...)
@@ -94,7 +99,7 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render) {
 		}
 	}
 	walk(tree.RootNode(), "", "", false, routeScope{})
-	return methods, calls, dedupRoutes(routes), renders
+	return methods, calls, dedupRoutes(routes), renders, locals
 }
 
 type routeScope struct{ path, module, resource string }
@@ -325,6 +330,7 @@ type Graph struct {
 	routes   []Route
 	refs     map[string][]Ref
 	files    map[string]File
+	locals   map[string]map[string][]LocalBinding
 }
 type resolvedCall struct {
 	Call   Call   `json:"call"`
@@ -332,7 +338,7 @@ type resolvedCall struct {
 }
 
 func buildGraph(idx *Index) Graph {
-	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: idx.Files}
+	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: idx.Files, locals: map[string]map[string][]LocalBinding{}}
 	owners, names := map[string]bool{}, map[string]bool{}
 	for _, f := range idx.Files {
 		for _, m := range f.Methods {
@@ -344,6 +350,13 @@ func buildGraph(idx *Index) Graph {
 		for _, r := range f.Renders {
 			k := methodKey(r.Owner, r.Source, r.SourceClass)
 			g.renders[k] = append(g.renders[k], r)
+		}
+		for _, b := range f.Locals {
+			k := methodKey(b.Owner, b.Source, b.SourceClass)
+			if g.locals[k] == nil {
+				g.locals[k] = map[string][]LocalBinding{}
+			}
+			g.locals[k][b.Name] = append(g.locals[k][b.Name], b)
 		}
 	}
 	for _, f := range idx.Files {
@@ -363,9 +376,27 @@ func buildGraph(idx *Index) Graph {
 				}
 				continue
 			}
+			var binding LocalBinding
+			if c.ReceiverKind == "variable" {
+				bindings := g.locals[sourceKey][c.Receiver]
+				if len(bindings) != 1 || bindings[0].Target == "" || !c.Direct || bindings[0].Line >= c.Line {
+					if names[c.Method] && !ormMethod(c.Method) {
+						kind := "dynamic_receiver"
+						if len(bindings) > 1 {
+							kind = "ambiguous_local_binding"
+						}
+						g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: kind, Path: c.Path, Line: c.Line, Detail: c.Receiver + "." + c.Method, Reason: "тип локальной переменной не определён однозначно"})
+					}
+					continue
+				}
+				binding = bindings[0]
+			}
 			targetOwner, class := c.Owner, c.SourceClass
 			targetMethod := c.Method
 			switch {
+			case c.ReceiverKind == "variable":
+				targetOwner = binding.Target
+				class = binding.Class
 			case c.Receiver == "":
 			case c.Receiver == "self":
 			case strings.HasSuffix(c.Receiver, ".new"):
@@ -387,7 +418,7 @@ func buildGraph(idx *Index) Graph {
 			}
 			if len(candidates) == 1 {
 				g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{c, candidates[0]})
-			} else if len(candidates) == 0 && (c.ReceiverKind == "constant" || c.ReceiverKind == "constructed") && c.Method != "new" && !ormMethod(c.Method) && owners[targetOwner] {
+			} else if len(candidates) == 0 && (c.ReceiverKind == "constant" || c.ReceiverKind == "constructed" || c.ReceiverKind == "variable") && c.Method != "new" && !ormMethod(c.Method) && owners[targetOwner] {
 				g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "unresolved_call", Path: c.Path, Line: c.Line, Detail: targetOwner + "#" + c.Method, Reason: "метод не найден в индексе; возможно, он унаследован или определён динамически"})
 			}
 		}
