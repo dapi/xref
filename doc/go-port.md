@@ -1,7 +1,9 @@
 # Go-порт для Ruby/Rails
 
 Это ранняя Go-реализация ядра xref. Исходный Ruby-движок и [спецификация](guide.md)
-сохранены в форке как эталон. Автор исходной идеи и спецификации — Nik Grebnev;
+сохранены в форке как эталон. Автор исходной идеи и спецификации —
+[Nik Grebnev](https://github.com/nikgrebnev), исходный проект —
+[nikgrebnev/xref](https://github.com/nikgrebnev/xref);
 условия использования находятся в [LICENSE](../LICENSE) и
 [LICENSE-docs](../LICENSE-docs).
 

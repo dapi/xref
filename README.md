@@ -1,7 +1,10 @@
 # xref
 
-> This fork also contains an [experimental Go port for Ruby/Rails projects](doc/go-port.md).
-> The original Ruby engine described below remains available and is the reference implementation.
+> Fork of [xref](https://github.com/nikgrebnev/xref) by
+> [Nik Grebnev](https://github.com/nikgrebnev).
+> The original Ruby engine and specification remain here under their
+> [MIT](LICENSE) and [CC BY 4.0](LICENSE-docs) licenses. This fork adds an
+> [experimental Go port for Ruby/Rails projects](doc/go-port.md).
 
 **An index of your code and your live databases — fast enough to use instead of grep.**
 
