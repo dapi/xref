@@ -11,6 +11,19 @@ func methodBindings(path string, method *ts.Node, src []byte, owner, name string
 		return nil
 	}
 	out := []LocalBinding{}
+	if params := method.ChildByFieldName("parameters"); params != nil {
+		var collect func(*ts.Node)
+		collect = func(n *ts.Node) {
+			if n.Kind() == "identifier" {
+				out = append(out, LocalBinding{Owner: owner, Source: name, SourceClass: class, Name: n.Utf8Text(src), Path: path, Line: int(n.StartPosition().Row) + 1})
+				return
+			}
+			for i := uint(0); i < n.NamedChildCount(); i++ {
+				collect(n.NamedChild(i))
+			}
+		}
+		collect(params)
+	}
 	var walk func(*ts.Node)
 	walk = func(n *ts.Node) {
 		if n != body && (n.Kind() == "method" || n.Kind() == "singleton_method") {
@@ -29,6 +42,8 @@ func methodBindings(path string, method *ts.Node, src []byte, owner, name string
 							b.Class = true
 						case "call":
 							if fieldText(right, "method", src) == "new" {
+								b.Target = callRoot(right.ChildByFieldName("receiver"), src)
+							} else if fieldText(right, "method", src) == "find" || fieldText(right, "method", src) == "find_by" || fieldText(right, "method", src) == "find_by!" {
 								b.Target = callRoot(right.ChildByFieldName("receiver"), src)
 							}
 						}

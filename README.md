@@ -6,6 +6,35 @@
 > [MIT](LICENSE) and [CC BY 4.0](LICENSE-docs) licenses. This fork adds an
 > [experimental Go port for Ruby/Rails projects](doc/go-port.md).
 
+## Go port in this fork
+
+The Go CLI indexes a Ruby/Rails checkout **without booting Rails or connecting
+to a database**. It reads Ruby, ERB/Haml, routes, and a local `db/structure.sql`
+when present. The index is stored in the user's cache directory, outside the
+project. A live PostgreSQL schema is read only when explicitly requested with
+`--schema name=pg:SOURCE`.
+
+```sh
+go build -o bin/xref-go ./cmd/xref-go
+bin/xref-go --project /path/to/rails-app refresh
+bin/xref-go --project /path/to/rails-app route 'GET /products'
+bin/xref-go --project /path/to/rails-app where products.id
+bin/xref-go --project /path/to/rails-app coverage
+```
+
+See the [Go guide](doc/go-port.en.md) for all commands and limitations and the
+[1.0 acceptance criteria](doc/go-v1-acceptance.md) for the release boundary.
+The Go CLI is a focused offline tool; it does not implement all commands of the
+original Ruby engine.
+
+---
+
+## Original Ruby engine and specification
+
+The documentation below describes the original Ruby engine retained in this
+fork. Its `bin/xref` commands and PostgreSQL index are separate from
+`bin/xref-go` and its local cache index.
+
 **An index of your code and your live databases — fast enough to use instead of grep.**
 
 [English](README.md) · [Русский](README.ru.md)

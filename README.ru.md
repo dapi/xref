@@ -6,6 +6,33 @@
 > [MIT](LICENSE) и [CC BY 4.0](LICENSE-docs). В этом форке добавлен
 > [экспериментальный Go-порт для Ruby/Rails](doc/go-port.md).
 
+## Go-порт в этом форке
+
+Go CLI индексирует Ruby/Rails-проект **без загрузки Rails и подключения к БД**.
+Он читает Ruby, ERB/Haml, маршруты и локальный `db/structure.sql`, если он есть.
+Индекс хранится в пользовательском кэше вне проекта. Живая схема PostgreSQL
+читается только при явном `--schema имя=pg:ИСТОЧНИК`.
+
+```sh
+go build -o bin/xref-go ./cmd/xref-go
+bin/xref-go --project /путь/к/rails-проекту refresh
+bin/xref-go --project /путь/к/rails-проекту route 'GET /products'
+bin/xref-go --project /путь/к/rails-проекту where products.id
+bin/xref-go --project /путь/к/rails-проекту coverage
+```
+
+Все команды и ограничения описаны в [руководстве Go-порта](doc/go-port.md),
+граница выпуска — в [критериях готовности 1.0](doc/go-v1-acceptance.ru.md).
+Go CLI решает основные офлайн-задачи и пока не повторяет все команды
+исходного Ruby-движка.
+
+---
+
+## Исходный Ruby-движок и спецификация
+
+Ниже сохранена документация исходного Ruby-движка. Его `bin/xref` и индекс в
+PostgreSQL не связаны с `bin/xref-go` и индексом в локальном кэше.
+
 **Индекс кода и живых схем — настолько быстрый, чтобы пользоваться им вместо текстового поиска.**
 
 [English](README.md) · [Русский](README.ru.md)

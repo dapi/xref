@@ -267,6 +267,9 @@ func TestRefreshDetectsChangedRubyAndSearchesTemplates(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("first changed=%d", n)
 	}
+	if info, err := os.Stat(idxPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("index permissions: %#v %v", info, err)
+	}
 	second, n, err := refresh(root, idxPath, idx, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +293,13 @@ func TestRefreshDetectsChangedRubyAndSearchesTemplates(t *testing.T) {
 	}
 	if len(hits) != 1 || !hits[0].Indexed || !strings.HasSuffix(hits[0].Path, "example.erb") {
 		t.Fatalf("hits: %#v", hits)
+	}
+	if err := os.WriteFile(filepath.Join(root, "db/structure.sql"), []byte("CREATE TABLE public.products (id bigint, name text, enabled boolean);\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fourth, n, err := refresh(root, idxPath, third, map[string]string{})
+	if err != nil || n == 0 || len(fourth.Schemas["repo"].Tables["products"]) != 3 {
+		t.Fatalf("schema refresh: changed=%d schema=%#v err=%v", n, fourth.Schemas["repo"], err)
 	}
 }
 

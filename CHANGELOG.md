@@ -1,5 +1,20 @@
 # Changelog
 
+## Go port — 1.0 preparation
+
+- Defined the offline Go release criteria and placed its build and commands at
+  the top of both READMEs, separate from the retained Ruby engine.
+- Added candidate table references for direct ActiveRecord entry points and
+  unambiguous declared model associations, including associations from an
+  explicitly included concern.
+- Connected simple no-argument instance method receivers to their indexed
+  methods while blocking local variables and parameters with the same name.
+- Added regression checks for ambiguous associations, cache freshness and
+  owner-only index permissions.
+
+The Go release remains subject to the documented acceptance checks; this
+section does not describe a tagged version.
+
 Dates are the dates things were measured, not release dates: this repository
 publishes a tool that has been running inside a live application since
 2026-08-21, and what matters about a change here is when its effect was observed.

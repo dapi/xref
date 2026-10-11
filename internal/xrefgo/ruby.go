@@ -224,7 +224,7 @@ func callRoot(n *ts.Node, src []byte) string {
 
 func ormMethod(s string) bool {
 	switch s {
-	case "where", "find_by", "find_by!", "order", "reorder", "group", "select", "pluck", "pick", "sum", "average", "minimum", "maximum", "count", "update_all", "delete_all", "joins", "left_joins", "includes", "preload", "exists?":
+	case "where", "find_by", "find_by!", "find", "first", "last", "take", "all", "create", "create!", "find_or_create_by", "find_or_create_by!", "find_or_initialize_by", "order", "reorder", "group", "select", "pluck", "pick", "sum", "average", "minimum", "maximum", "count", "update_all", "delete_all", "joins", "left_joins", "includes", "preload", "exists?":
 		return true
 	}
 	return false
