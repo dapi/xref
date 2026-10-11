@@ -51,7 +51,7 @@ func Run(args []string, out io.Writer) error {
 		return fmt.Errorf("--limit должен быть больше нуля")
 	}
 	switch rest[0] {
-	case "refresh", "where", "find", "blind", "drift", "audit", "route", "trace", "callers":
+	case "refresh", "where", "find", "blind", "drift", "audit", "coverage", "route", "trace", "callers":
 	default:
 		return fmt.Errorf("неизвестная команда %q\n%s", rest[0], usage())
 	}
@@ -123,6 +123,11 @@ func Run(args []string, out io.Writer) error {
 		result = drift(idx)
 	case "audit":
 		result = audit(idx, changed, path)
+	case "coverage":
+		if len(rest) != 1 {
+			return fmt.Errorf("coverage не принимает аргументы")
+		}
+		result = coverageReport(idx)
 	case "route", "trace":
 		if len(rest) != 2 || rest[1] == "" {
 			return fmt.Errorf("%s требует путь маршрута или имя таблицы", cmd)
@@ -149,7 +154,7 @@ func Run(args []string, out io.Writer) error {
 }
 
 func usage() string {
-	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ|pg:ИСТОЧНИК] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit, route <[VERB ]/путь>, trace <таблица[.колонка]>, callers <файл>"
+	return "xref-go [--project ПУТЬ] [--schema ИМЯ=ПУТЬ|pg:ИСТОЧНИК] [--json] [--limit N] КОМАНДА\nКоманды: refresh, where <таблица[.колонка]>, find <текст>, blind, drift, audit, coverage, route <[VERB ]/путь>, trace <таблица[.колонка]>, callers <файл>"
 }
 
 func allRefs(idx *Index) []Ref {
@@ -488,6 +493,42 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 			fmt.Fprintln(out)
 			for _, gap := range x.Gaps {
 				fmt.Fprintf(out, "  %s:%d %s %s — %s\n", gap.Path, gap.Line, gap.Kind, gap.Detail, gap.Reason)
+			}
+		}
+		fmt.Fprintln(out, x.Note)
+	case CoverageReport:
+		fmt.Fprintf(out, "Маршрутов: %d; с обращением к таблице: %d; без него: %d; с пробелами: %d\n", x.Routes, x.WithReferences, x.WithoutReferences, x.WithGaps)
+		fmt.Fprintf(out, "Цепочек: %d; пробелов по маршрутам: %d; уникальных мест: %d\n", x.TotalChains, x.TotalGaps, x.UniqueGaps)
+		kinds := make([]string, 0, len(x.GapKinds))
+		for kind := range x.GapKinds {
+			kinds = append(kinds, kind)
+		}
+		sort.Slice(kinds, func(i, j int) bool {
+			if x.GapKinds[kinds[i]] != x.GapKinds[kinds[j]] {
+				return x.GapKinds[kinds[i]] > x.GapKinds[kinds[j]]
+			}
+			return kinds[i] < kinds[j]
+		})
+		for _, kind := range kinds {
+			fmt.Fprintf(out, "  %s: %d по маршрутам, %d уникальных мест\n", kind, x.GapKinds[kind], x.UniqueGapKinds[kind])
+		}
+		fmt.Fprintf(out, "Маршруты (первые %d из %d по приоритету):\n", min(limit, len(x.Rows)), len(x.Rows))
+		for i, row := range x.Rows {
+			if i >= limit {
+				break
+			}
+			fmt.Fprintf(out, "%s %s → %s#%s (%s:%d): цепочек %d, пробелов %d\n", row.Route.Verb, row.Route.Path, row.Route.Controller, row.Route.Action, row.Route.Source, row.Route.Line, row.Chains, len(row.Gaps))
+			for j, gap := range row.Gaps {
+				if j >= 3 {
+					break
+				}
+				fmt.Fprintf(out, "  %s:%d %s %s — %s\n", gap.Path, gap.Line, gap.Kind, gap.Detail, gap.Reason)
+			}
+			if len(row.Gaps) > 3 {
+				fmt.Fprintf(out, "  ещё пробелов: %d (полный список: --json coverage)\n", len(row.Gaps)-3)
+			}
+			if row.FirstReference != nil {
+				fmt.Fprintf(out, "  пример: %s:%d %s\n", row.FirstReference.Path, row.FirstReference.Line, row.FirstReference.Table)
 			}
 		}
 		fmt.Fprintln(out, x.Note)
