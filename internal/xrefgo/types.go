@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 10
+const indexVersion = 11
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -32,6 +32,14 @@ type File struct {
 	Locals        []LocalBinding `json:"locals,omitempty"`
 	Includes      []ModelInclude `json:"includes,omitempty"`
 	ConcernScopes []ConcernScope `json:"concern_scopes,omitempty"`
+	Classes       []ClassDecl    `json:"classes,omitempty"`
+}
+
+type ClassDecl struct {
+	Owner      string `json:"owner"`
+	Superclass string `json:"superclass,omitempty"`
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
 }
 
 type Method struct {

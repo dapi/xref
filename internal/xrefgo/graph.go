@@ -135,6 +135,16 @@ func relationMethod(name string) bool {
 	return false
 }
 
+// These Rails persistence names can touch a database even when their
+// implementation is supplied by a gem and absent from the project index.
+func persistenceMethod(name string) bool {
+	switch name {
+	case "create", "create!", "update", "update!", "update_all", "destroy", "destroy!", "delete", "delete_all", "save", "save!", "reload", "with_lock", "transaction":
+		return true
+	}
+	return false
+}
+
 func isScope(m Method) bool { return m.Kind == "scope" || m.Kind == "concern_scope" }
 
 type routeScope struct{ path, module, resource string }
@@ -366,6 +376,7 @@ type Graph struct {
 	refs     map[string][]Ref
 	files    map[string]File
 	locals   map[string]map[string][]LocalBinding
+	classes  map[string][]ClassDecl
 }
 type resolvedCall struct {
 	Call   Call     `json:"call"`
@@ -375,9 +386,12 @@ type resolvedCall struct {
 
 func buildGraph(idx *Index) Graph {
 	files := expandedFiles(idx)
-	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: files, locals: map[string]map[string][]LocalBinding{}}
+	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: files, locals: map[string]map[string][]LocalBinding{}, classes: map[string][]ClassDecl{}}
 	owners, names := map[string]bool{}, map[string]bool{}
 	for _, f := range files {
+		for _, class := range f.Classes {
+			g.classes[class.Owner] = append(g.classes[class.Owner], class)
+		}
 		for _, m := range f.Methods {
 			k := methodKey(m.Owner, m.Name, m.Class)
 			g.methods[k] = append(g.methods[k], m)
@@ -429,14 +443,14 @@ func buildGraph(idx *Index) Graph {
 				candidates := g.methods[methodKey(c.Receiver, c.Method, true)]
 				if valid && len(candidates) == 1 && isScope(candidates[0]) {
 					g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{Call: c, Target: candidates[0], Prefix: prefix})
-				} else if names[c.Method] && !ormMethod(c.Method) {
-					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Reason: "цепочка relation или scope не разрешена однозначно"})
+				} else if names[c.Method] && !ormMethod(c.Method) || persistenceMethod(c.Method) {
+					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Method: c.Method, Reason: "цепочка relation или scope не разрешена однозначно"})
 				}
 				continue
 			}
 			if c.ReceiverKind == "dynamic" {
-				if names[c.Method] && !ormMethod(c.Method) {
-					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Reason: "цель вызова зависит от значения переменной"})
+				if names[c.Method] && !ormMethod(c.Method) || persistenceMethod(c.Method) {
+					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Method: c.Method, Reason: "цель вызова зависит от значения переменной"})
 				}
 				continue
 			}
@@ -444,12 +458,12 @@ func buildGraph(idx *Index) Graph {
 			if c.ReceiverKind == "variable" {
 				bindings := g.locals[sourceKey][c.Receiver]
 				if len(bindings) != 1 || bindings[0].Target == "" || !c.Direct || bindings[0].Line >= c.Line {
-					if names[c.Method] && !ormMethod(c.Method) {
+					if names[c.Method] && !ormMethod(c.Method) || persistenceMethod(c.Method) {
 						kind := "dynamic_receiver"
 						if len(bindings) > 1 {
 							kind = "ambiguous_local_binding"
 						}
-						g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: kind, Path: c.Path, Line: c.Line, Detail: c.Receiver + "." + c.Method, Reason: "тип локальной переменной не определён однозначно"})
+						g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: kind, Path: c.Path, Line: c.Line, Detail: c.Receiver + "." + c.Method, Method: c.Method, Reason: "тип локальной переменной не определён однозначно"})
 					}
 					continue
 				}
@@ -519,6 +533,7 @@ type TraceGap struct {
 	Path   string `json:"path"`
 	Line   int    `json:"line"`
 	Detail string `json:"detail,omitempty"`
+	Method string `json:"method,omitempty"`
 	Reason string `json:"reason"`
 }
 type TraceReport struct {
@@ -556,6 +571,54 @@ func routeTemplate(r Route, path string) bool {
 	return ext == ".haml" || ext == ".erb"
 }
 
+// Find an action in the controller or a locally indexed superclass. An
+// unindexed superclass is only a candidate explanation, never a resolved edge.
+func (g Graph) controllerAction(owner, action string) (string, string) {
+	seen := map[string]bool{}
+	for owner != "" && !seen[owner] {
+		seen[owner] = true
+		if len(g.methods[methodKey(owner, action, false)]) > 0 {
+			return owner, ""
+		}
+		decls := g.classes[owner]
+		if len(decls) == 0 {
+			return "", ""
+		}
+		parent := decls[0].Superclass
+		for _, decl := range decls[1:] {
+			if decl.Superclass != parent {
+				return "", ""
+			}
+		}
+		if parent == "" {
+			return "", ""
+		}
+		candidate := parent
+		if !strings.Contains(parent, "::") && strings.Contains(owner, "::") {
+			ns := owner[:strings.LastIndex(owner, "::")]
+			if len(g.classes[ns+"::"+parent]) > 0 {
+				candidate = ns + "::" + parent
+			}
+		}
+		if len(g.classes[candidate]) == 0 {
+			return "", parent
+		}
+		owner = candidate
+	}
+	return "", ""
+}
+
+func externalActionCandidate(parent string) bool {
+	if parent == "" {
+		return false
+	}
+	switch parent {
+	case "ActionController::Base", "ActionController::API", "ActionController::Metal", "AbstractController::Base":
+		return false
+	}
+	return true
+}
+
 func (g Graph) routeChains(r Route, query string, limit int) []TraceChain {
 	out := []TraceChain{}
 	add := func(steps []TraceStep, ref Ref) {
@@ -579,7 +642,7 @@ func (g Graph) routeChains(r Route, query string, limit int) []TraceChain {
 			}
 		}
 	}
-	owner := controllerOwner(r.Controller)
+	owner, _ := g.controllerAction(controllerOwner(r.Controller), r.Action)
 	key := methodKey(owner, r.Action, false)
 	visited := map[string]bool{}
 	var visit func(string, []TraceStep, int)
@@ -630,9 +693,10 @@ func (g Graph) routeGaps(r Route, limit int) []TraceGap {
 			out = append(out, gap)
 		}
 	}
-	owner := controllerOwner(r.Controller)
+	requestedOwner := controllerOwner(r.Controller)
+	owner, missingParent := g.controllerAction(requestedOwner, r.Action)
 	key := methodKey(owner, r.Action, false)
-	if len(g.methods[key]) == 0 {
+	if owner == "" {
 		found := false
 		prefix := "app/views/" + r.Controller + "/" + r.Action + "."
 		for path := range g.files {
@@ -642,7 +706,13 @@ func (g Graph) routeGaps(r Route, limit int) []TraceGap {
 			}
 		}
 		if !found {
-			add(TraceGap{Kind: "action_not_indexed", Path: r.Source, Line: r.Line, Detail: owner + "#" + r.Action, Reason: "нет метода действия или обычного шаблона в индексе; действие может быть унаследовано"})
+			gap := TraceGap{Kind: "action_not_indexed", Path: r.Source, Line: r.Line, Detail: requestedOwner + "#" + r.Action, Reason: "нет метода действия или обычного шаблона в индексе; действие может быть унаследовано"}
+			if externalActionCandidate(missingParent) {
+				gap.Kind = "action_in_unindexed_superclass"
+				gap.Detail = missingParent + "#" + r.Action
+				gap.Reason = "родительский класс отсутствует в локальном индексе; действие может быть предоставлено зависимостью"
+			}
+			add(gap)
 		}
 	}
 	visited := map[string]bool{}
