@@ -499,6 +499,7 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 	case CoverageReport:
 		fmt.Fprintf(out, "Маршрутов: %d; с обращением к таблице: %d; без него: %d; с пробелами: %d\n", x.Routes, x.WithReferences, x.WithoutReferences, x.WithGaps)
 		fmt.Fprintf(out, "Цепочек: %d; пробелов по маршрутам: %d; уникальных мест: %d\n", x.TotalChains, x.TotalGaps, x.UniqueGaps)
+		fmt.Fprintf(out, "Динамических вызовов без подтверждённого пути к таблице: %d по маршрутам, %d уникальных мест\n", x.UnverifiedCalls, x.UniqueUnverifiedCalls)
 		kinds := make([]string, 0, len(x.GapKinds))
 		for kind := range x.GapKinds {
 			kinds = append(kinds, kind)
@@ -517,7 +518,7 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 			if i >= limit {
 				break
 			}
-			fmt.Fprintf(out, "%s %s → %s#%s (%s:%d): цепочек %d, пробелов %d\n", row.Route.Verb, row.Route.Path, row.Route.Controller, row.Route.Action, row.Route.Source, row.Route.Line, row.Chains, len(row.Gaps))
+			fmt.Fprintf(out, "%s %s → %s#%s (%s:%d): цепочек %d, пробелов %d, других динамических вызовов %d\n", row.Route.Verb, row.Route.Path, row.Route.Controller, row.Route.Action, row.Route.Source, row.Route.Line, row.Chains, len(row.Gaps), len(row.UnverifiedCalls))
 			for j, gap := range row.Gaps {
 				if j >= 3 {
 					break
@@ -526,6 +527,10 @@ func printHuman(out io.Writer, cmd string, v any, limit int, blindSpots int) {
 			}
 			if len(row.Gaps) > 3 {
 				fmt.Fprintf(out, "  ещё пробелов: %d (полный список: --json coverage)\n", len(row.Gaps)-3)
+			}
+			if len(row.UnverifiedCalls) > 0 {
+				call := row.UnverifiedCalls[0]
+				fmt.Fprintf(out, "  другой вызов: %s:%d %s (все: --json coverage)\n", call.Path, call.Line, call.Detail)
 			}
 			if row.FirstReference != nil {
 				fmt.Fprintf(out, "  пример: %s:%d %s\n", row.FirstReference.Path, row.FirstReference.Line, row.FirstReference.Table)
