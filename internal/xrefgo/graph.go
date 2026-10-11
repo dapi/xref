@@ -65,6 +65,9 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []
 					case "identifier":
 						value = receiver.Utf8Text(src)
 						receiverKind = "variable"
+						if strings.HasPrefix(value, "current_") && len(value) > len("current_") {
+							receiverKind = "model_helper"
+						}
 					case "self":
 						value = "self"
 						receiverKind = "self"
@@ -80,6 +83,12 @@ func scanGraph(path string, src []byte) ([]Method, []Call, []Route, []Render, []
 						} else if root, chain := relationChain(receiver, src); root != "" && len(chain) > 0 {
 							value, prefix = root, chain
 							receiverKind = "relation"
+						} else if receiver.ChildByFieldName("receiver") == nil && receiver.ChildByFieldName("arguments") == nil {
+							helper := fieldText(receiver, "method", src)
+							if strings.HasPrefix(helper, "current_") && len(helper) > len("current_") {
+								value = helper
+								receiverKind = "model_helper"
+							}
 						}
 					}
 				}
@@ -368,15 +377,16 @@ func methodKey(owner, name string, class bool) string {
 }
 
 type Graph struct {
-	methods  map[string][]Method
-	forward  map[string][]resolvedCall
-	renders  map[string][]Render
-	callGaps map[string][]TraceGap
-	routes   []Route
-	refs     map[string][]Ref
-	files    map[string]File
-	locals   map[string]map[string][]LocalBinding
-	classes  map[string][]ClassDecl
+	methods      map[string][]Method
+	forward      map[string][]resolvedCall
+	renders      map[string][]Render
+	callGaps     map[string][]TraceGap
+	routes       []Route
+	refs         map[string][]Ref
+	files        map[string]File
+	locals       map[string]map[string][]LocalBinding
+	classes      map[string][]ClassDecl
+	associations map[string]map[string][]ModelAssociation
 }
 type resolvedCall struct {
 	Call   Call     `json:"call"`
@@ -386,7 +396,7 @@ type resolvedCall struct {
 
 func buildGraph(idx *Index) Graph {
 	files := expandedFiles(idx)
-	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: files, locals: map[string]map[string][]LocalBinding{}, classes: map[string][]ClassDecl{}}
+	g := Graph{methods: map[string][]Method{}, forward: map[string][]resolvedCall{}, renders: map[string][]Render{}, callGaps: map[string][]TraceGap{}, routes: allRoutes(idx), refs: map[string][]Ref{}, files: files, locals: map[string]map[string][]LocalBinding{}, classes: map[string][]ClassDecl{}, associations: modelAssociations(idx)}
 	owners, names := map[string]bool{}, map[string]bool{}
 	for _, f := range files {
 		for _, class := range f.Classes {
@@ -425,6 +435,22 @@ func buildGraph(idx *Index) Graph {
 		}
 		for _, c := range f.Calls {
 			sourceKey := methodKey(c.Owner, c.Source, c.SourceClass)
+			if owner := associationReceiver(c, g.locals[sourceKey], idx.ModelMap); owner != "" {
+				candidates := g.associations[owner][c.Method]
+				if len(candidates) == 1 {
+					target := candidates[0]
+					if info := idx.ModelMap[target.Target]; info.Table != "" {
+						g.refs[sourceKey] = append(g.refs[sourceKey], Ref{Path: c.Path, Line: c.Line, Kind: "orm_association", Table: info.Table, Confidence: "candidate", Detail: owner + "#" + c.Method + " → " + target.Target})
+						continue
+					}
+				}
+			}
+			if c.ReceiverKind == "model_helper" {
+				if names[c.Method] || persistenceMethod(c.Method) {
+					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Method: c.Method, Reason: "тип current_ helper не подтверждён объявлением связи модели"})
+				}
+				continue
+			}
 			if c.ReceiverKind == "relation" {
 				info := idx.ModelMap[c.Receiver]
 				prefix := []Method{}
@@ -453,6 +479,16 @@ func buildGraph(idx *Index) Graph {
 					g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Method, Method: c.Method, Reason: "цель вызова зависит от значения переменной"})
 				}
 				continue
+			}
+			if c.ReceiverKind == "variable" && len(g.locals[sourceKey][c.Receiver]) == 0 {
+				candidates := g.methods[methodKey(c.Owner, c.Receiver, false)]
+				if len(candidates) == 1 && c.Receiver != c.Source {
+					g.forward[sourceKey] = append(g.forward[sourceKey], resolvedCall{Call: c, Target: candidates[0]})
+					if names[c.Method] && !ormMethod(c.Method) || persistenceMethod(c.Method) {
+						g.callGaps[sourceKey] = append(g.callGaps[sourceKey], TraceGap{Kind: "dynamic_receiver", Path: c.Path, Line: c.Line, Detail: c.Receiver + "." + c.Method, Method: c.Method, Reason: "возвращаемый тип вызова без аргументов не определён"})
+					}
+					continue
+				}
 			}
 			var binding LocalBinding
 			if c.ReceiverKind == "variable" {

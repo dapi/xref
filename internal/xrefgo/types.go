@@ -2,7 +2,7 @@ package xrefgo
 
 import "time"
 
-const indexVersion = 11
+const indexVersion = 12
 
 // Evidence deliberately separates parsed facts from inferred ORM uses and text.
 type Ref struct {
@@ -19,20 +19,21 @@ type Ref struct {
 }
 
 type File struct {
-	Size          int64          `json:"size"`
-	ModTime       int64          `json:"mtime"`
-	SHA256        string         `json:"sha256"`
-	Refs          []Ref          `json:"refs,omitempty"`
-	Errors        int            `json:"errors,omitempty"`
-	Segments      int            `json:"template_segments,omitempty"`
-	Methods       []Method       `json:"methods,omitempty"`
-	Calls         []Call         `json:"calls,omitempty"`
-	Routes        []Route        `json:"routes,omitempty"`
-	Renders       []Render       `json:"renders,omitempty"`
-	Locals        []LocalBinding `json:"locals,omitempty"`
-	Includes      []ModelInclude `json:"includes,omitempty"`
-	ConcernScopes []ConcernScope `json:"concern_scopes,omitempty"`
-	Classes       []ClassDecl    `json:"classes,omitempty"`
+	Size          int64              `json:"size"`
+	ModTime       int64              `json:"mtime"`
+	SHA256        string             `json:"sha256"`
+	Refs          []Ref              `json:"refs,omitempty"`
+	Errors        int                `json:"errors,omitempty"`
+	Segments      int                `json:"template_segments,omitempty"`
+	Methods       []Method           `json:"methods,omitempty"`
+	Calls         []Call             `json:"calls,omitempty"`
+	Routes        []Route            `json:"routes,omitempty"`
+	Renders       []Render           `json:"renders,omitempty"`
+	Locals        []LocalBinding     `json:"locals,omitempty"`
+	Includes      []ModelInclude     `json:"includes,omitempty"`
+	ConcernScopes []ConcernScope     `json:"concern_scopes,omitempty"`
+	Classes       []ClassDecl        `json:"classes,omitempty"`
+	Associations  []ModelAssociation `json:"associations,omitempty"`
 }
 
 type ClassDecl struct {
@@ -68,6 +69,14 @@ type Call struct {
 type ModelInclude struct {
 	Owner  string `json:"owner"`
 	Module string `json:"module"`
+}
+
+type ModelAssociation struct {
+	Owner  string `json:"owner"`
+	Name   string `json:"name"`
+	Target string `json:"target"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
 }
 
 type ConcernScope struct {
